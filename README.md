@@ -20,8 +20,6 @@ docker-compose up -d
 # http://localhost/api/health  （后端健康检查）
 ```
 
-![输入图片说明](image.png)
-
 > **前提条件**：服务器已安装 Docker 和 Docker Compose。
 >
 > 首次构建会自动安装 Playwright Chromium 浏览器和中文字体包（fonts-noto-cjk），确保 PDF 导出效果与本地一致。
