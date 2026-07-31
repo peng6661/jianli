@@ -53,8 +53,6 @@ COPY styles.css /app/styles.css
 COPY sw.js /app/sw.js
 COPY logo.ico /app/logo.ico
 COPY logo.png /app/logo.png
-COPY image.png /app/image.png
-COPY acc0a192-dcfe-4325-87b0-3a44b7fca998.png /app/acc0a192-dcfe-4325-87b0-3a44b7fca998.png
 COPY wechat_public.bmp /app/wechat_public.bmp
 COPY wechat_qr.png /app/wechat_qr.png
 

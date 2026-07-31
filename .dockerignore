@@ -42,7 +42,6 @@ logs/
 Dockerfile
 docker-compose.yml
 .dockerignore
-docker-entrypoint.sh
 
 # Docs / screenshots (not needed at runtime)
 README.md
