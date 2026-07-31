@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="description" content="Resume Editor">
+    <title>Resume Editor</title>
+    <link rel="icon" href="logo.ico" type="image/x-icon">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* ================ Resume List Page ================ */
+        .resume-page {
+            padding-top: 100px;
+            min-height: 100vh;
+            background: #f8fafc;
+        }
+        /* 导航栏：更高 + 渐变背景 */
+        .navbar {
+            height: 100px;
+            background: linear-gradient(135deg, #f5f7ff 0%, #f0f5ff 50%, #f5f0ff 100%) !important;
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+        }
+        .nav-logo img { width:32px; height:32px; border-radius:8px; }
+            width: 36px;
+            height: 36px;
+        }
+        .navbar .nav-brand {
+            font-size: 22px;
+        }
+        .resume-limit-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #fa8c16;
+            background: #fff7e6;
+            border-radius: var(--radius-full);
+            border: 1px solid #ffd591;
+        }
+
+        /* Resume Cards */
+        .resume-list {
+            padding: 32px 0;
+        }
+        .resume-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 20px;
+        }
+        .resume-card-item {
+            background: #fff;
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        .resume-card-item:hover {
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border-color: var(--primary);
+        }
+        .resume-card-body {
+            padding: 28px 20px;
+            min-height: 140px;
+            flex: 1;
+        }
+        .resume-card-title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .resume-card-title-row h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        .resume-card-title-row h3:hover {
+            color: var(--primary);
+        }
+        .resume-card-title-row h3 .edit-icon {
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .resume-card-title-row h3:hover .edit-icon {
+            opacity: 0.6;
+        }
+        .resume-style-tag {
+            display: inline-block;
+            padding: 2px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: var(--radius-full);
+            background: #e6f4ff;
+            color: var(--primary);
+        }
+        .resume-card-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        .resume-card-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 4px;
+            background: #f0f5ff;
+            color: #2f54eb;
+        }
+        .resume-card-tag.green { background: #f6ffed; color: #52c41a; }
+        .resume-card-tag.purple { background: #f9f0ff; color: #722ed1; }
+        .resume-card-tag.orange { background: #fff7e6; color: #fa8c16; }
+
+        .resume-card-desc {
+            font-size: 13px;
+            color: var(--text-tertiary);
+            line-height: 1.6;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .resume-card-date {
+            font-size: 12px;
+            color: #bfbfbf;
+        }
+
+        /* Card Actions */
+        .resume-card-actions {
+            display: flex;
+            border-top: 1px solid var(--border-secondary);
+        }
+        .resume-card-actions button {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 12px 8px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: var(--font-sans);
+        }
+        .resume-card-actions button:hover {
+            color: var(--primary);
+            background: rgba(0,0,0,0.04);
+        }
+        .resume-card-actions button.danger:hover {
+            color: var(--error);
+        }
+        .resume-card-actions button + button {
+            border-left: 1px solid var(--border-secondary);
+        }
+        .resume-card-actions svg {
+            width: 16px;
+            height: 16px;
+        }
+        /* 导出下拉选择 */
+        .export-select {
+            flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+            padding: 10px 4px; font-size: 13px; font-family: inherit; font-weight: 500;
+            border: none; background: transparent; cursor: pointer;
+            color: var(--text-secondary); transition: all 0.2s;
+            border-left: 1px solid var(--border-secondary);
+            -webkit-appearance: none; appearance: none; outline: none;
+            text-align: center; text-align-last: center;
+            line-height: 1; min-width: 0;
+        }
+        .export-select:hover { color: var(--primary); background: rgba(0,0,0,0.04); }
+        .export-select option { text-align: left; }
+
+        /* Empty State */
+        .resume-empty {
+            text-align: center;
+            padding: 80px 20px;
+            grid-column: 1 / -1;
+        }
+        .resume-empty svg {
+            width: 80px;
+            height: 80px;
+            color: #d9d9d9;
+            margin-bottom: 16px;
+        }
+        .resume-empty h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        .resume-empty p {
+            font-size: 14px;
+            color: var(--text-tertiary);
+            margin-bottom: 24px;
+        }
+
+        @media (max-width: 768px) {
+            .resume-grid {
+                grid-template-columns: 1fr;
+            }
+            .resume-header-inner {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .resume-card-actions button {
+                font-size: 12px;
+                padding: 10px 4px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="container nav-container">
+            <a href="index.html" class="nav-logo">
+                <img src="logo.png" width="32" height="32" style="border-radius:8px;" alt="卡码简历"/>
+                <span class="nav-brand">Resume Editor</span>
+            </a>
+            <div class="nav-links" id="navLinks">
+            </div>
+            <div class="nav-actions" style="display:flex;align-items:center;gap:12px;">
+                <a href="resume-editor.html?new=true" class="btn btn-primary" id="createResumeBtn" style="padding:8px 24px;font-size:15px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    新建简历
+                </a>
+                <button class="btn btn-outline" onclick="clearLocalCache()" title="清除所有本地缓存数据" style="padding:8px 16px;font-size:13px;gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                    </svg>
+                    一键删除
+                </button>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="菜单">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <div class="resume-page">
+
+        <!-- Resume List -->
+        <div class="resume-list">
+            <div class="container">
+                <div class="resume-grid" id="resumeGrid">
+                    <!-- Generated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 注册 Service Worker 实现浏览器缓存
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js');
+        }
+    </script>
+    <script>
+        // ==========================================
+        // 简历列表管理
+        // ==========================================
+        document.addEventListener('DOMContentLoaded', function() {
+            loadResumeList();
+        });
+
+        function loadResumeList() {
+            const grid = document.getElementById('resumeGrid');
+            renderResumeList(grid, getResumes());
+        }
+
+        function darkenColor(hex, amount) {
+            hex = hex.replace('#', '');
+            if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+            var r = parseInt(hex.substring(0,2), 16);
+            var g = parseInt(hex.substring(2,4), 16);
+            var b = parseInt(hex.substring(4,6), 16);
+            r = Math.round(r * (1 - amount));
+            g = Math.round(g * (1 - amount));
+            b = Math.round(b * (1 - amount));
+            return '#' + [r,g,b].map(function(c){ return c.toString(16).padStart(2,'0'); }).join('');
+        }
+        function renderResumeList(grid, resumes) {
+
+            if (resumes.length === 0) {
+                grid.innerHTML = `
+                    <div class="resume-empty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="12" y1="18" x2="12" y2="12"/>
+                            <line x1="9" y1="15" x2="15" y2="15"/>
+                        </svg>
+                        <h3>还没有创建简历</h3>
+                        <p>选择一个模板，快速创建您的专业简历</p>
+                        <a href="resume-editor.html?new=true" class="btn btn-primary btn-lg">创建简历</a>
+                    </div>
+                `;
+                return;
+            }
+
+            grid.innerHTML = resumes.map(function(resume, index) {
+                var id = resume.id;
+                var title = resume.title || '未命名简历';
+                var date = resume.updatedAt || resume.createdAt || new Date().toISOString();
+                var formattedDate = formatDate(date);
+                var styleName = resume.templateStyle || '现代简约';
+                var cardBg = resume.cardColor || '#ffffff';
+                var actionsBg = darkenColor(cardBg, 0.05);
+                var actionsBorder = darkenColor(cardBg, 0.1);
+
+                return `
+                    <div class="resume-card-item" data-id="${id}" style="background:${cardBg}">
+                        <div class="resume-card-body">
+                            <div class="resume-card-title-row">
+                                <h3 ondblclick="startRename('${id}')" class="resume-title-text" title="双击重命名">
+                                    ${title}
+                                    <span class="edit-icon" onclick="startRename('${id}')" style="cursor:pointer;">✏️</span>
+                                </h3>
+                                <span class="resume-style-tag">${styleName}</span>
+                            </div>
+                            <div class="resume-card-date">最近更新: ${formattedDate}</div>
+                        </div>
+                        <div class="resume-card-actions" style="background:${actionsBg};border-top-color:${actionsBorder}">
+                            <button onclick="editResume('${id}')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                                编辑
+                            </button>
+                            <select class="export-select" onchange="if(this.value)doExport('${id}',this.value);this.value=''">
+                                <option value="">导出 PDF</option>
+                                <option value="continuous">📄 默认 PDF</option>
+                                <option value="paginated">📑 分页 PDF</option>
+                            </select>
+                            <button class="danger" onclick="deleteResume('${id}')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                                </svg>
+                                删除
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function getResumes() {
+            try {
+                return JSON.parse(localStorage.getItem('kamacoder_resumes') || '[]');
+            } catch { return []; }
+        }
+
+        function saveResumes(resumes) {
+            localStorage.setItem('kamacoder_resumes', JSON.stringify(resumes));
+        }
+
+        function editResume(id) {
+            // 兼容旧数据：id 为 null 时刷新页面让编辑器重新生成
+            if (!id || id === 'null' || id === 'undefined') {
+                window.location.href = 'resume-editor.html?new=true';
+            } else {
+                window.location.href = 'resume-editor.html?id=' + id;
+            }
+        }
+
+        function deleteResume(id) {
+            if (!confirm('确定要删除这份简历吗？删除后不可恢复。')) return;
+            let resumes = getResumes();
+            resumes = resumes.filter(function(r) { return String(r.id) !== String(id); });
+            saveResumes(resumes);
+            loadResumeList();
+        }
+
+        function startRename(id) {
+            const card = document.querySelector(`.resume-card-item[data-id="${id}"]`);
+            if (!card) return;
+            const h3 = card.querySelector('.resume-card-title-row h3');
+            if (!h3) return;
+            const titleText = h3.childNodes[0].textContent.trim();
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = titleText;
+            input.className = 'resume-title-input';
+            input.style.cssText = 'font-size:16px;font-weight:600;border:1px solid var(--primary);border-radius:4px;padding:2px 6px;outline:none;width:180px;font-family:inherit;';
+            h3.innerHTML = '';
+            h3.appendChild(input);
+            input.focus();
+            input.select();
+            function finish() {
+                const newName = input.value.trim();
+                if (newName && newName !== titleText) {
+                    let resumes = getResumes();
+                    const idx = resumes.findIndex(r => r.id === id);
+                    if (idx !== -1) {
+                        resumes[idx].title = newName;
+                        saveResumes(resumes);
+                    }
+                }
+                loadResumeList();
+            }
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') { e.preventDefault(); finish(); }
+                if (e.key === 'Escape') { loadResumeList(); }
+            });
+            input.addEventListener('blur', finish);
+        }
+
+        function exportResume(id) {
+            const resumes = getResumes();
+            const resume = resumes.find(r => r.id === id);
+            if (!resume) return;
+            window.open('resume-editor.html?id=' + id + '&export=true&view=continuous', '_blank');
+        }
+        function doExport(id, mode) {
+            window.open('resume-editor.html?id=' + id + '&export=true&view=' + mode, '_blank');
+        }
+
+        function formatDate(dateStr) {
+            try {
+                const d = new Date(dateStr);
+                const now = new Date();
+                const diff = now - d;
+                if (diff < 60000) return '刚刚';
+                if (diff < 3600000) return Math.floor(diff/60000) + '分钟前';
+                if (diff < 86400000) return Math.floor(diff/3600000) + '小时前';
+                return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+            } catch { return dateStr; }
+        }
+
+        // Mobile nav toggle
+        document.getElementById('navToggle')?.addEventListener('click', function() {
+            document.getElementById('navLinks').classList.toggle('active');
+            document.querySelector('.nav-actions')?.classList.toggle('active');
+        });
+
+        // 清理本地缓存的旧简历数据
+        window.clearLocalCache = function() {
+            if (!confirm('⚠️ 这个决定很危险，请你一定要考虑清楚！\n\n此操作会一键删除所有缓存的简历数据，包括：\n· 所有已创建的简历\n· 所有编辑记录\n· 所有自定义配置\n\n删除后数据将无法恢复，请谨慎操作！')) return;
+            localStorage.removeItem('kamacoder_resumes');
+            localStorage.removeItem('resume_id_counter');
+            loadResumeList();
+            showToast('本地缓存已清理', 'success');
+        };
+        function showToast(msg, type) {
+            var t = document.getElementById('toast');
+            if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
+            t.textContent = msg; t.className = 'toast ' + (type || 'info') + ' show';
+            clearTimeout(t._timer);
+            t._timer = setTimeout(function() { t.classList.remove('show'); }, 3000);
+        }
+
+    </script>
+</body>
+</html>

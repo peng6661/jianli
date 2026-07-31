@@ -1,0 +1,31 @@
+# ============================================
+# Resume Editor - Docker Compose
+# Single container: Nginx (static) + FastAPI (PDF)
+# ============================================
+
+services:
+  resume-editor:
+    build: .
+    container_name: resume-editor
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      # CORS: set to your domain in production, e.g. "https://resume.example.com"
+      - ALLOWED_ORIGINS=*
+      - HOST=0.0.0.0
+    volumes:
+      # Optional: mount custom fonts for PDF rendering
+      # - ./fonts:/usr/share/fonts/custom:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

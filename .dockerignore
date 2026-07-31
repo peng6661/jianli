@@ -1,0 +1,52 @@
+# ============================================
+# Resume Editor - Docker Ignore
+# Files NOT copied into the Docker image
+# ============================================
+
+# Git
+.git
+.gitignore
+
+# IDE / Editor
+.idea
+.vscode
+*.iml
+*.swp
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+back/__pycache__
+
+# Build artifacts
+dist
+build
+*.spec
+
+# Agent / workspace
+.workbuddy
+.claude
+.atomcode
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker (avoid recursive context)
+Dockerfile
+docker-compose.yml
+.dockerignore
+docker-entrypoint.sh
+
+# Docs / screenshots (not needed at runtime)
+README.md
+LICENSE
+简历网站.png
+image.png
+acc0a192-dcfe-4325-87b0-3a44b7fca998.png

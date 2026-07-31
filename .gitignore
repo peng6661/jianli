@@ -1,0 +1,48 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads
+uploads/
+
+# AtomCode
+.atomcode/
+.atomcode.md
+
+# ClaudeCode
+.claude/
+
+# WorkBuddy
+.workbuddy/
+
+# 前端启动脚本
+
+# 前端启动脚本
+start-frontend.bat
+
+# 后端启动脚本
+back/start.bat
+back/start_server.py
+
+# 部署包（改为 Gitee Release 附件分发，不纳入仓库）
+简历网站部署.exe
+简历网站部署.zip
