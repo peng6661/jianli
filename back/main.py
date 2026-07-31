@@ -118,9 +118,12 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
             pass
 
         # Generate PDF with background colors preserved
-        # The HTML's own @page rules take precedence for page size
+        # prefer_css_page_size=True: 让 HTML 中的 @page CSS 规则决定页面大小
+        #   - 默认视图: JS 动态设置 @page{size:210mm <内容高度>mm} → 单页
+        #   - 分页视图: @page{size:A4} → 标准 A4 多页
         pdf_bytes = await page.pdf(
             print_background=True,
+            prefer_css_page_size=True,
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
         )
 
