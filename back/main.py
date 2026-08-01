@@ -93,52 +93,104 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
     """
     Render HTML to PDF using Playwright's Chromium engine.
 
-    The HTML may contain:
-    - @page CSS rules (A4 size, margins, page-break)
-    - Inline JS that waits for images to decode, measures content height,
-      sets dynamic @page size, then signals via window.__pdfPageReady
-    - -webkit-print-color-adjust: exact for color fidelity
+    Two modes based on the HTML content:
+    - Default view (has .resume-paper, no .paginated-page):
+      Backend measures content height AFTER images decode, injects a
+      dynamic @page{size:210mm <height>mm} for a single-page PDF.
+    - Paginated view (has .paginated-page):
+      Uses the static @page{size:A4} from CSS for multi-page PDF.
 
-    We wait for the embedded JS signal (window.__pdfPageReady) instead of
-    a fixed delay, ensuring images are fully decoded before height measurement.
+    The height measurement is done by the backend directly on the Playwright
+    page (not embedded JS), eliminating timing issues with image decoding.
     """
+    page = None
     try:
         browser = await get_browser()
         page = await browser.new_page()
 
-        # Set the HTML content (domcontentloaded is enough — no external resources
-        # in the export HTML, all images are base64 inline)
+        # 1. Set HTML content — domcontentloaded is enough since all
+        #    resources (images) are base64 inline, no external requests
         await page.set_content(html, wait_until="domcontentloaded")
 
-        # Wait for embedded JS to signal completion.
-        # The JS waits for all images to decode, measures content height,
-        # sets the dynamic @page size, then sets window.__pdfPageReady = true.
-        # This replaces the unreliable fixed-delay approach (wait_for_timeout)
-        # which failed when large base64 images took longer to decode.
+        # 2. Wait for all images to fully load and decode.
+        #    This is the critical step — base64 images decode asynchronously,
+        #    and measuring height before decode completes gives wrong results.
+        #    We replicate Edge's --virtual-time-budget behavior by explicitly
+        #    waiting for image decode to finish.
         try:
-            await page.wait_for_function(
-                "window.__pdfPageReady === true", timeout=15000
+            await page.evaluate(
+                """async () => {
+                    const imgs = Array.from(document.querySelectorAll('img'));
+                    // Step 1: wait for all images to fire load/error
+                    await Promise.all(imgs.map(img => {
+                        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+                        return new Promise(res => {
+                            img.addEventListener('load', res, {once: true});
+                            img.addEventListener('error', res, {once: true});
+                        });
+                    }));
+                    // Step 2: wait for decode to complete
+                    await Promise.all(imgs.map(img => {
+                        if (img.decode) return img.decode().catch(() => {});
+                        return Promise.resolve();
+                    }));
+                    // Step 3: wait for layout to settle (two RAF cycles)
+                    await new Promise(res => {
+                        requestAnimationFrame(() => requestAnimationFrame(res));
+                    });
+                }""",
+                timeout=15000,
             )
-        except Exception:
-            log.warning("PDF page-ready signal timeout, using fallback page size")
+        except Exception as e:
+            log.warning("Image decode wait timed out: %s", str(e))
 
-        # Ensure fonts are loaded
+        # 3. Wait for fonts to be ready
         try:
             await page.evaluate("document.fonts.ready")
         except Exception:
             pass
 
-        # Generate PDF with background colors preserved
-        # prefer_css_page_size=True: 让 HTML 中的 @page CSS 规则决定页面大小
-        #   - 默认视图: JS 动态设置 @page{size:210mm <内容高度>mm} → 单页
-        #   - 分页视图: @page{size:A4} → 标准 A4 多页
+        # 4. Default view: measure content height and set dynamic @page size.
+        #    Paginated view: @page{size:A4} is already in the CSS, skip.
+        has_paginated = await page.evaluate(
+            "document.querySelector('.paginated-page') !== null"
+        )
+        if not has_paginated:
+            # Measure the .resume-paper content height in the Playwright page
+            height_px = await page.evaluate(
+                """() => {
+                    const r = document.querySelector('.resume-paper');
+                    if (!r) return 0;
+                    // Use scrollHeight which includes all content + padding
+                    // Add small buffer (6px) to avoid rounding cutoff
+                    return r.scrollHeight + 6;
+                }"""
+            )
+            if height_px and height_px > 0:
+                # Convert px to mm (96dpi: 1mm = 96/25.4 px ≈ 3.779 px)
+                height_mm = height_px / 96 * 25.4
+                height_mm = max(height_mm, 10)  # safety floor
+                await page.evaluate(
+                    f"""() => {{
+                        const s = document.createElement('style');
+                        s.textContent = '@page{{size:210mm {height_mm:.1f}mm;margin:0}}';
+                        document.head.appendChild(s);
+                    }}"""
+                )
+                log.info(
+                    "Default view: measured %dpx = %.1fmm, set single-page @page",
+                    height_px, height_mm,
+                )
+
+        # 5. Generate PDF
+        #    prefer_css_page_size=True: use the @page rule from CSS
+        #      - Default view: dynamically injected @page{size:210mm <height>mm}
+        #      - Paginated view: static @page{size:A4}
         pdf_bytes = await page.pdf(
             print_background=True,
             prefer_css_page_size=True,
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
         )
-
-        await page.close()
 
         log.info("PDF generated: %s (%d bytes)", filename, len(pdf_bytes))
         return pdf_bytes
@@ -146,6 +198,13 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
     except Exception as e:
         log.error("PDF generation failed: %s", str(e))
         raise RuntimeError(f"PDF generation failed: {str(e)}") from e
+
+    finally:
+        if page:
+            try:
+                await page.close()
+            except Exception:
+                pass
 
 
 # ============================================

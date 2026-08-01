@@ -4530,35 +4530,6 @@
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
                 + '<title>' + title + '</title>'
                 + '<style>' + pdfCSS + '</style>'
-                + (viewMode !== 'paginated' ? '<script>' +
-                    'window.onload=function(){' +
-                      'var imgs=Array.from(document.querySelectorAll("img"));' +
-                      'Promise.all(imgs.map(function(img){' +
-                        'if(img.complete&&img.naturalWidth>0)return Promise.resolve();' +
-                        'return new Promise(function(res){img.onload=img.onerror=res;});' +
-                      '})).then(function(){' +
-                        'return Promise.all(imgs.map(function(img){' +
-                          'return img.decode?img.decode().catch(function(){}):Promise.resolve();' +
-                        '}));' +
-                      '}).then(function(){' +
-                        'return new Promise(function(res){requestAnimationFrame(function(){requestAnimationFrame(res);});});' +
-                      '}).then(function(){' +
-                        'var r=document.querySelector(".resume-paper");' +
-                        'if(!r){window.__pdfPageReady=true;return;}' +
-                        'var c=r.lastElementChild;' +
-                        'if(!c){window.__pdfPageReady=true;return;}' +
-                        'var t=r.getBoundingClientRect().top;' +
-                        'var b=c.getBoundingClientRect().bottom;' +
-                        'var m=parseInt(getComputedStyle(c).marginBottom)||0;' +
-                        'var h=b-t+m+6;' +
-                        'var mm=Math.ceil(h/3.779);' +
-                        'var s=document.createElement("style");' +
-                        's.textContent="@page{size:210mm "+mm+"mm;margin:0}";' +
-                        'document.head.appendChild(s);' +
-                        'window.__pdfPageReady=true;' +
-                      '});' +
-                    '}' +
-                '<\/script>' : '<script>window.onload=function(){window.__pdfPageReady=true;}<\/script>')
                 + '</head><body>'
                 + bodyHtml
                 + '</body></html>';
