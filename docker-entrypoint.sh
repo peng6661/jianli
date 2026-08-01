@@ -3,9 +3,25 @@ set -e
 
 echo "========================================"
 echo "  Resume Editor - Cloud Deployment"
-echo "  PDF Engine: Microsoft Edge headless"
+echo "  PDF Engine: Microsoft Edge + Xvfb"
 echo "========================================"
 echo ""
+
+# Start Xvfb (virtual framebuffer display)
+# Edge headless modes (--headless=new/old) hang in Docker containers.
+# Running Edge in full GUI mode on Xvfb bypasses all headless issues.
+if command -v Xvfb &>/dev/null; then
+    Xvfb :99 -screen 0 1280x1024x24 -ac +extension RANDR +render -noreset &
+    XVFB_PID=$!
+    sleep 1  # Give Xvfb time to initialize
+    if kill -0 $XVFB_PID 2>/dev/null; then
+        echo "  Xvfb virtual display ready on :99"
+    else
+        echo "  WARNING: Xvfb failed to start! Edge may not work."
+    fi
+else
+    echo "  WARNING: Xvfb not found, Edge may not work in headless mode."
+fi
 
 # Start D-Bus system daemon (Edge/Chromium requires it)
 # Without dbus-daemon, Edge hangs indefinitely on D-Bus connect attempts
@@ -59,6 +75,6 @@ echo "  Press Ctrl+C to stop."
 echo ""
 
 # Graceful shutdown on signal
-trap "echo ''; echo 'Shutting down...'; kill $BACKEND_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
+trap "echo ''; echo 'Shutting down...'; kill $BACKEND_PID $XVFB_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
 
 nginx -g 'daemon off;'

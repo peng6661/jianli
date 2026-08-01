@@ -12,6 +12,7 @@ Architecture: localStorage cloud deployment = static site + lightweight backend
 
 import os
 import sys
+import time
 import subprocess
 import tempfile
 import shutil
@@ -161,9 +162,10 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         Path(temp_pdf).unlink(missing_ok=True)
 
         # Build command line arguments
+        # No --headless flag: Xvfb provides a virtual display, so Edge runs in
+        # full GUI mode. Headless modes (--headless=new/old) hang in Docker.
         cmd = [
             EDGE_PATH,
-            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -179,7 +181,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
-            "--no-zygote",
+            "--disable-crash-reporter",
             "--user-data-dir=/tmp/edge-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -187,12 +189,10 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             Path(temp_html).absolute().as_uri(),
         ]
 
-        log.info("Generating PDF via Edge headless: %s", filename)
+        log.info("Generating PDF via Edge (Xvfb): %s", filename)
         log.info("Edge command: %s", " ".join(cmd))
 
         # Explicitly set D-Bus env vars for Edge subprocess.
-        # Docker ENV sets these globally, but we ensure them here too
-        # in case the parent process environment was modified.
         edge_env = os.environ.copy()
         edge_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
         edge_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
@@ -206,19 +206,43 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             env=edge_env,
         )
 
-        try:
-            stdout_data, _ = process.communicate(timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout_data, _ = process.communicate()  # Read remaining output after kill
-            log.error("Edge TIMED OUT (30s). Edge output:\n%s",
-                      stdout_data[:3000] if stdout_data else "(empty)")
-            # Kill any lingering Edge processes (Linux: pkill, Windows: taskkill)
-            _kill_edge_processes()
-            raise RuntimeError(
-                "Edge browser timed out (30s). "
-                f"Edge output: {stdout_data[:500] if stdout_data else '(empty)'}"
-            )
+        # In non-headless mode (Xvfb), Edge generates the PDF but may not exit.
+        # Poll for the PDF file — when it's ready, kill Edge.
+        # Also handle the case where Edge exits on its own (--virtual-time-budget).
+        pdf_path = Path(temp_pdf)
+        stdout_data = ""
+        deadline = time.time() + 30
+
+        while True:
+            # Did Edge exit on its own?
+            if process.poll() is not None:
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                break
+            # Is the PDF ready?
+            if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                time.sleep(0.5)  # Ensure file is fully written
+                process.kill()
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                log.info("PDF ready, Edge terminated")
+                break
+            # Timeout?
+            if time.time() >= deadline:
+                process.kill()
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                log.error("Edge TIMED OUT (30s). Output:\n%s",
+                          stdout_data[:3000] if stdout_data else "(empty)")
+                _kill_edge_processes()
+                break
+            time.sleep(0.5)
 
         exit_code = process.returncode
         if exit_code != 0:
@@ -308,7 +332,6 @@ def test_edge():
 
         cmd = [
             EDGE_PATH,
-            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -324,7 +347,7 @@ def test_edge():
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
-            "--no-zygote",
+            "--disable-crash-reporter",
             "--user-data-dir=/tmp/edge-test-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -348,24 +371,36 @@ def test_edge():
             env=edge_env,
         )
 
-        try:
-            stdout_data, _ = process.communicate(timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout_data, _ = process.communicate()
-            log.error("[test-edge] TIMEOUT (30s). Output:\n%s",
-                      stdout_data[:2000] if stdout_data else "(empty)")
-            # Even after timeout+kill, PDF might have been generated before exit
-            pdf_path = Path(temp_pdf)
-            pdf_exists = pdf_path.exists()
-            pdf_size = pdf_path.stat().st_size if pdf_exists else 0
-            return {
-                "status": "timeout_but_pdf_exists" if pdf_exists and pdf_size > 0 else "timeout",
-                "exit_code": None,
-                "stdout": stdout_data[:1000] if stdout_data else "",
-                "pdf_created": pdf_exists,
-                "pdf_size": pdf_size,
-            }
+        # Poll for PDF file (same as main export)
+        pdf_path = Path(temp_pdf)
+        stdout_data = ""
+        deadline = time.time() + 30
+
+        while True:
+            if process.poll() is not None:
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                break
+            if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                time.sleep(0.5)
+                process.kill()
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                break
+            if time.time() >= deadline:
+                process.kill()
+                try:
+                    stdout_data, _ = process.communicate(timeout=5)
+                except Exception:
+                    pass
+                log.error("[test-edge] TIMEOUT (30s). Output:\n%s",
+                          stdout_data[:2000] if stdout_data else "(empty)")
+                break
+            time.sleep(0.5)
 
         pdf_path = Path(temp_pdf)
         pdf_exists = pdf_path.exists()
@@ -498,9 +533,9 @@ def diag_edge():
     except Exception as e:
         result["checks"]["fonts"] = {"error": str(e)}
 
-    # 6. --dump-dom test (simplest Edge command, no PDF generation)
-    #    If this works but --print-to-pdf doesn't, the issue is PDF-specific.
-    #    If this also hangs, the issue is Edge initialization in the container.
+    # 6. --dump-dom test in non-headless mode (Xvfb display)
+    #    No --headless flag: Edge runs in full GUI mode on virtual display.
+    #    This bypasses all headless mode issues.
     test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
     temp_html = None
     try:
@@ -512,7 +547,6 @@ def diag_edge():
 
         cmd = [
             EDGE_PATH,
-            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -520,7 +554,7 @@ def diag_edge():
             "--no-default-browser-check",
             "--password-store=basic",
             "--disable-background-networking",
-            "--no-zygote",
+            "--disable-crash-reporter",
             "--user-data-dir=/tmp/edge-diag-profile",
             "--dump-dom",
             Path(temp_html).absolute().as_uri(),
@@ -540,7 +574,7 @@ def diag_edge():
         )
 
         try:
-            stdout_data, _ = process.communicate(timeout=10)
+            stdout_data, _ = process.communicate(timeout=15)
             result["checks"]["dump_dom"] = {
                 "status": "ok" if process.returncode == 0 else f"exit_{process.returncode}",
                 "exit_code": process.returncode,
@@ -548,121 +582,13 @@ def diag_edge():
             }
         except subprocess.TimeoutExpired:
             process.kill()
-            stdout_data, _ = process.communicate()
+            stdout_data, _ = process.communicate(timeout=5)
             result["checks"]["dump_dom"] = {
                 "status": "timeout",
                 "stdout_preview": (stdout_data[:500] if stdout_data else "(empty)"),
             }
     except Exception as e:
         result["checks"]["dump_dom"] = {"status": "error", "message": str(e)}
-    finally:
-        if temp_html:
-            Path(temp_html).unlink(missing_ok=True)
-
-    # 7. Also try old headless mode (--headless=old) for comparison
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".html", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(test_html)
-            temp_html = f.name
-
-        cmd_old = [
-            EDGE_PATH,
-            "--headless=old",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--disable-background-networking",
-            "--no-zygote",
-            "--user-data-dir=/tmp/edge-diag2-profile",
-            "--dump-dom",
-            Path(temp_html).absolute().as_uri(),
-        ]
-
-        process2 = subprocess.Popen(
-            cmd_old,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=edge_env,
-        )
-
-        try:
-            stdout2, _ = process2.communicate(timeout=10)
-            result["checks"]["dump_dom_old_headless"] = {
-                "status": "ok" if process2.returncode == 0 else f"exit_{process2.returncode}",
-                "exit_code": process2.returncode,
-                "stdout_preview": (stdout2[:500] if stdout2 else "(empty)"),
-            }
-        except subprocess.TimeoutExpired:
-            process2.kill()
-            stdout2, _ = process2.communicate()
-            result["checks"]["dump_dom_old_headless"] = {
-                "status": "timeout",
-                "stdout_preview": (stdout2[:500] if stdout2 else "(empty)"),
-            }
-    except Exception as e:
-        result["checks"]["dump_dom_old_headless"] = {"status": "error", "message": str(e)}
-    finally:
-        if temp_html:
-            Path(temp_html).unlink(missing_ok=True)
-
-    # 8. --dump-dom with --single-process (bypass zygote + renderer process spawning)
-    #    If this works when others don't, the issue is process spawning in Docker.
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".html", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(test_html)
-            temp_html = f.name
-
-        cmd_sp = [
-            EDGE_PATH,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--disable-background-networking",
-            "--no-zygote",
-            "--single-process",
-            "--user-data-dir=/tmp/edge-diag3-profile",
-            "--dump-dom",
-            Path(temp_html).absolute().as_uri(),
-        ]
-
-        process3 = subprocess.Popen(
-            cmd_sp,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=edge_env,
-        )
-
-        try:
-            stdout3, _ = process3.communicate(timeout=10)
-            result["checks"]["dump_dom_single_process"] = {
-                "status": "ok" if process3.returncode == 0 else f"exit_{process3.returncode}",
-                "exit_code": process3.returncode,
-                "stdout_preview": (stdout3[:500] if stdout3 else "(empty)"),
-            }
-        except subprocess.TimeoutExpired:
-            process3.kill()
-            stdout3, _ = process3.communicate()
-            result["checks"]["dump_dom_single_process"] = {
-                "status": "timeout",
-                "stdout_preview": (stdout3[:500] if stdout3 else "(empty)"),
-            }
-    except Exception as e:
-        result["checks"]["dump_dom_single_process"] = {"status": "error", "message": str(e)}
     finally:
         if temp_html:
             Path(temp_html).unlink(missing_ok=True)
