@@ -95,21 +95,32 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
 
     The HTML may contain:
     - @page CSS rules (A4 size, margins, page-break)
-    - Inline JS that measures content height and sets dynamic @page size
+    - Inline JS that waits for images to decode, measures content height,
+      sets dynamic @page size, then signals via window.__pdfPageReady
     - -webkit-print-color-adjust: exact for color fidelity
 
-    We wait for networkidle + a short delay to ensure embedded JS
-    (height measurement) has executed before generating the PDF.
+    We wait for the embedded JS signal (window.__pdfPageReady) instead of
+    a fixed delay, ensuring images are fully decoded before height measurement.
     """
     try:
         browser = await get_browser()
         page = await browser.new_page()
 
-        # Set the HTML content directly (no temp file needed)
-        await page.set_content(html, wait_until="networkidle")
+        # Set the HTML content (domcontentloaded is enough — no external resources
+        # in the export HTML, all images are base64 inline)
+        await page.set_content(html, wait_until="domcontentloaded")
 
-        # Give embedded JS time to run (height measurement, font loading)
-        await page.wait_for_timeout(500)
+        # Wait for embedded JS to signal completion.
+        # The JS waits for all images to decode, measures content height,
+        # sets the dynamic @page size, then sets window.__pdfPageReady = true.
+        # This replaces the unreliable fixed-delay approach (wait_for_timeout)
+        # which failed when large base64 images took longer to decode.
+        try:
+            await page.wait_for_function(
+                "window.__pdfPageReady === true", timeout=15000
+            )
+        except Exception:
+            log.warning("PDF page-ready signal timeout, using fallback page size")
 
         # Ensure fonts are loaded
         try:
