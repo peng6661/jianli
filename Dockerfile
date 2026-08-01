@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Chinese fonts for PDF rendering
     fonts-noto-cjk \
     fonts-noto-cjk-extra \
+    # Latin fonts (Arial/Helvetica metric-compatible equivalents)
+    fonts-liberation2 \
     # nginx for static file serving
     nginx \
     # curl for healthcheck in docker-entrypoint
