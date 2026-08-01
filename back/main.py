@@ -353,11 +353,16 @@ def test_edge():
             stdout_data, _ = process.communicate()
             log.error("[test-edge] TIMEOUT (15s). Output:\n%s",
                       stdout_data[:2000] if stdout_data else "(empty)")
+            # Even after timeout+kill, PDF might have been generated before exit
+            pdf_path = Path(temp_pdf)
+            pdf_exists = pdf_path.exists()
+            pdf_size = pdf_path.stat().st_size if pdf_exists else 0
             return {
-                "status": "timeout",
+                "status": "timeout_but_pdf_exists" if pdf_exists and pdf_size > 0 else "timeout",
                 "exit_code": None,
                 "stdout": stdout_data[:1000] if stdout_data else "",
-                "pdf_created": False,
+                "pdf_created": pdf_exists,
+                "pdf_size": pdf_size,
             }
 
         pdf_path = Path(temp_pdf)
@@ -382,6 +387,184 @@ def test_edge():
             if tmp:
                 Path(tmp).unlink(missing_ok=True)
 
+
+@app.get("/api/diag-edge")
+def diag_edge():
+    """
+    Comprehensive Edge diagnostics for Docker containers.
+    Checks D-Bus, shared libraries, and runs a --dump-dom test.
+    """
+
+    result = {
+        "edge_path": EDGE_PATH,
+        "checks": {},
+    }
+
+    if EDGE_PATH is None:
+        result["checks"]["edge_found"] = False
+        return result
+
+    result["checks"]["edge_found"] = True
+
+    # 1. Edge version
+    try:
+        ver = subprocess.run(
+            [EDGE_PATH, "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        result["checks"]["edge_version"] = ver.stdout.strip() or ver.stderr.strip()
+    except Exception as e:
+        result["checks"]["edge_version"] = f"error: {e}"
+
+    # 2. DBUS env vars
+    result["checks"]["env"] = {
+        "DBUS_SYSTEM_BUS_ADDRESS": os.environ.get("DBUS_SYSTEM_BUS_ADDRESS", "(unset)"),
+        "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", "(unset)"),
+    }
+
+    # 3. dbus-daemon process running?
+    try:
+        pgrep = subprocess.run(
+            ["pgrep", "-x", "dbus-daemon"],
+            capture_output=True, text=True, timeout=5,
+        )
+        result["checks"]["dbus_daemon_running"] = pgrep.returncode == 0
+        if pgrep.returncode == 0:
+            result["checks"]["dbus_daemon_pid"] = pgrep.stdout.strip()
+    except Exception as e:
+        result["checks"]["dbus_daemon_running"] = f"error: {e}"
+
+    # 4. Socket exists?
+    socket_path = Path("/run/dbus/system_bus_socket")
+    result["checks"]["dbus_socket_exists"] = socket_path.exists()
+    if socket_path.exists():
+        result["checks"]["dbus_socket"] = str(socket_path)
+
+    # 5. Missing shared libraries
+    try:
+        ldd = subprocess.run(
+            ["ldd", EDGE_PATH],
+            capture_output=True, text=True, timeout=10,
+        )
+        missing = [l for l in ldd.stdout.splitlines() if "not found" in l]
+        result["checks"]["missing_libs"] = missing if missing else []
+        result["checks"]["ldd_ok"] = len(missing) == 0
+    except Exception as e:
+        result["checks"]["missing_libs"] = f"error: {e}"
+
+    # 6. --dump-dom test (simplest Edge command, no PDF generation)
+    #    If this works but --print-to-pdf doesn't, the issue is PDF-specific.
+    #    If this also hangs, the issue is Edge initialization in the container.
+    test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
+    temp_html = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(test_html)
+            temp_html = f.name
+
+        cmd = [
+            EDGE_PATH,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--disable-background-networking",
+            "--user-data-dir=/tmp/edge-diag-profile",
+            "--dump-dom",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        edge_env = os.environ.copy()
+        edge_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        edge_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=edge_env,
+        )
+
+        try:
+            stdout_data, _ = process.communicate(timeout=10)
+            result["checks"]["dump_dom"] = {
+                "status": "ok" if process.returncode == 0 else f"exit_{process.returncode}",
+                "exit_code": process.returncode,
+                "stdout_preview": (stdout_data[:500] if stdout_data else "(empty)"),
+            }
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout_data, _ = process.communicate()
+            result["checks"]["dump_dom"] = {
+                "status": "timeout",
+                "stdout_preview": (stdout_data[:500] if stdout_data else "(empty)"),
+            }
+    except Exception as e:
+        result["checks"]["dump_dom"] = {"status": "error", "message": str(e)}
+    finally:
+        if temp_html:
+            Path(temp_html).unlink(missing_ok=True)
+
+    # 7. Also try old headless mode (--headless=old) for comparison
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(test_html)
+            temp_html = f.name
+
+        cmd_old = [
+            EDGE_PATH,
+            "--headless=old",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--disable-background-networking",
+            "--user-data-dir=/tmp/edge-diag2-profile",
+            "--dump-dom",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        process2 = subprocess.Popen(
+            cmd_old,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=edge_env,
+        )
+
+        try:
+            stdout2, _ = process2.communicate(timeout=10)
+            result["checks"]["dump_dom_old_headless"] = {
+                "status": "ok" if process2.returncode == 0 else f"exit_{process2.returncode}",
+                "exit_code": process2.returncode,
+                "stdout_preview": (stdout2[:500] if stdout2 else "(empty)"),
+            }
+        except subprocess.TimeoutExpired:
+            process2.kill()
+            stdout2, _ = process2.communicate()
+            result["checks"]["dump_dom_old_headless"] = {
+                "status": "timeout",
+                "stdout_preview": (stdout2[:500] if stdout2 else "(empty)"),
+            }
+    except Exception as e:
+        result["checks"]["dump_dom_old_headless"] = {"status": "error", "message": str(e)}
+    finally:
+        if temp_html:
+            Path(temp_html).unlink(missing_ok=True)
+
+    return result
 
 
 @app.post("/api/export-pdf")
