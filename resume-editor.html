@@ -9,6 +9,8 @@
     <meta name="description" content="在线简历编辑器 - Resume Editor"/>
     <title>简历编辑器 - Resume Editor</title>
     <link rel="icon" href="logo.ico" type="image/x-icon">
+    <!-- 统一字体：Noto Sans SC（浏览器通过CDN加载，Docker通过系统字体Noto Sans CJK SC渲染，同一设计） -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <!-- v2.0 -->
@@ -23,7 +25,7 @@
             --ant-text-disabled: rgba(0,0,0,0.25);
             --ant-border: rgba(5,5,5,0.06);
             --ant-border-color: #d9d9d9;
-            --ant-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+            --ant-font: 'Noto Sans SC', 'Noto Sans CJK SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             --header-h: 64px;
         }
         * { box-sizing: border-box; }
@@ -5150,7 +5152,7 @@
                 ? '.paginated-page { outline: 2px solid #d0d5dd !important; outline-offset: -2px !important; box-shadow: 0 4px 16px rgba(0,0,0,0.10) !important; }'
                 : '.resume-paper{box-shadow:0 4px 20px rgba(0,0,0,0.10);border-radius:2px;}';
 
-            var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + title + '</title><style>' + baseCSS + 'body{margin:0;padding:20px;background:#f0f2f5;text-align:center}.resume-paper,.paginated-page{display:block;margin:0 auto 20px auto;text-align:left;}' + overrideCSS + '</style></head><body>' + bodyHtml + '</body></html>';
+            var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet"><title>' + title + '</title><style>' + baseCSS + 'body{margin:0;padding:20px;background:#f0f2f5;text-align:center}.resume-paper,.paginated-page{display:block;margin:0 auto 20px auto;text-align:left;}' + overrideCSS + '</style></head><body>' + bodyHtml + '</body></html>';
             var pw = window.open('', '_blank');
             pw.document.write(fullHtml);
             pw.document.close();
