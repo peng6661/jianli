@@ -3,13 +3,13 @@ set -e
 
 echo "========================================"
 echo "  Resume Editor - Cloud Deployment"
-echo "  PDF Engine: Microsoft Edge + Xvfb"
+echo "  PDF Engine: Microsoft Edge headless + Xvfb"
 echo "========================================"
 echo ""
 
 # Start Xvfb (virtual framebuffer display)
-# Edge headless modes (--headless=new/old) hang in Docker containers.
-# Running Edge in full GUI mode on Xvfb bypasses all headless issues.
+# Xvfb provides DISPLAY=:99 which helps Edge headless mode initialize
+# properly in Docker containers (some headless rendering paths reference display).
 if command -v Xvfb &>/dev/null; then
     Xvfb :99 -screen 0 1280x1024x24 -ac +extension RANDR +render -noreset &
     XVFB_PID=$!
@@ -20,7 +20,7 @@ if command -v Xvfb &>/dev/null; then
         echo "  WARNING: Xvfb failed to start! Edge may not work."
     fi
 else
-    echo "  WARNING: Xvfb not found, Edge may not work in headless mode."
+    echo "  WARNING: Xvfb not found, Edge headless may not initialize properly."
 fi
 
 # Start D-Bus system daemon (Edge/Chromium requires it)

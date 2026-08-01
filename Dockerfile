@@ -1,6 +1,6 @@
 # ============================================
 # Resume Editor - Cloud Deployment Dockerfile
-# Microsoft Edge + Xvfb + FastAPI backend
+# Microsoft Edge headless + Xvfb + FastAPI backend
 # ============================================
 
 FROM python:3.12-slim
@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # without it Edge hangs waiting for /run/dbus/system_bus_socket
     dbus \
     # Xvfb: virtual framebuffer display.
-    # Edge headless modes (--headless=new/old) HANG in Docker containers.
-    # Running Edge in full GUI mode on Xvfb bypasses all headless issues.
+    # Provides DISPLAY=:99 which helps Edge headless mode initialize
+    # properly in Docker containers (some headless rendering paths reference display).
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 # Virtual display for Edge (Xvfb started in docker-entrypoint.sh).
-# Edge headless modes hang in Docker; running on Xvfb bypasses this.
+# Xvfb provides DISPLAY=:99 which helps Edge headless initialize in Docker.
 ENV DISPLAY=:99
 
 # Add Microsoft Edge apt repository and install
