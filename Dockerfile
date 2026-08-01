@@ -1,27 +1,38 @@
 # ============================================
 # Resume Editor - Cloud Deployment Dockerfile
-# WeasyPrint (pure Python PDF) + FastAPI backend
-# No browser needed — ~50MB memory vs 300-500MB for Edge/Chromium
+# PDF Engine: Edge (primary, Blink = same as browser) + WeasyPrint (fallback)
+# Swap file created at runtime to handle Edge memory needs
 # ============================================
 
 FROM python:3.12-slim
 
-# Install system dependencies for WeasyPrint + nginx
-# WeasyPrint needs: libpango, libcairo, libgdk-pixbuf (C libraries)
-# Fonts: wqy-zenhei for CJK, liberation2 for Latin
+# Install system dependencies:
+# - WeasyPrint: libpango, libcairo, libgdk-pixbuf (fallback engine)
+# - Edge: microsoft-edge-stable (primary engine, same Blink as browser)
+# - dbus: Edge needs D-Bus on Linux
+# - Fonts: wqy-zenhei (CJK ~10MB), liberation2 (Latin, Arial-compatible)
+# - nginx: static file serving
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # WeasyPrint runtime dependencies
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
     libcairo2 \
     libgdk-pixbuf-2.0-0 \
-    # CJK font (~10MB, covers GB2312/GBK)
     fonts-wqy-zenhei \
-    # Latin fonts (Arial/Helvetica metric-compatible)
     fonts-liberation2 \
-    # nginx for static file serving
+    dbus \
     nginx \
+    curl gnupg \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /usr/share/keyrings/microsoft-edge.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main" \
+        > /etc/apt/sources.list.d/microsoft-edge.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends microsoft-edge-stable \
     && rm -rf /var/lib/apt/lists/*
+
+# D-Bus environment (Edge connects to D-Bus on Linux)
+ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 
 WORKDIR /app
 

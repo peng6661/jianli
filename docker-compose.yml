@@ -1,7 +1,8 @@
 # ============================================
 # Resume Editor - Docker Compose
-# Single container: Nginx (static) + FastAPI (PDF via WeasyPrint)
-# No browser needed — no shm_size, no seccomp, no special security
+# Single container: Nginx (static) + FastAPI (PDF via Edge/WeasyPrint)
+# privileged: needed for swapon (creates 2GB swap at startup)
+# shm_size: Edge needs large /dev/shm for rendering
 # ============================================
 
 services:
@@ -10,6 +11,8 @@ services:
     container_name: resume-editor
     restart: unless-stopped
     init: true                    # Use tini as PID 1 (proper zombie reaping)
+    privileged: true              # Required for swapon syscall (swap creation)
+    shm_size: "2gb"              # Edge rendering needs large /dev/shm
     ports:
       - "8080:80"
     environment:
@@ -25,7 +28,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s           # Extra time for swap creation + Edge init
     logging:
       driver: json-file
       options:

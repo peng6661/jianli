@@ -4490,8 +4490,9 @@
             if (viewMode === 'paginated') {
                 pageSizeRule = '@page { size: A4; margin: 0; }';
             } else {
-                // 默认视图：后端WeasyPrint会通过两遍渲染测量真实内容高度
-                // 前端这里只需给一个初始值，后端会用box tree遍历覆盖
+                // 默认视图：前端给初始 @page 高度值
+                // Edge 会执行嵌入 JS 重新测量精确高度（Blink 引擎，和浏览器一致）
+                // WeasyPrint 会通过后端两遍渲染测量高度（box tree 遍历）
                 var measuredH = Math.ceil(paper.getBoundingClientRect().height) + 30;
                 var measuredMm = Math.ceil(measuredH / 3.779);
                 pageSizeRule = '@page { size: 210mm ' + measuredMm + 'mm; margin: 0; }';
@@ -4527,6 +4528,24 @@
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
                 + '<title>' + title + '</title>'
                 + '<style>' + pdfCSS + '</style>'
+                + (viewMode !== 'paginated' ? '<script>' +
+                    'window.onload=function(){' +
+                      'setTimeout(function(){' +
+                        'var r=document.querySelector(".resume-paper");' +
+                        'if(!r)return;' +
+                        'var c=r.lastElementChild;' +
+                        'if(!c)return;' +
+                        'var t=r.getBoundingClientRect().top;' +
+                        'var b=c.getBoundingClientRect().bottom;' +
+                        'var m=parseInt(getComputedStyle(c).marginBottom)||0;' +
+                        'var h=b-t+m+6;' +
+                        'var mm=Math.ceil(h/3.779);' +
+                        'var s=document.createElement("style");' +
+                        's.textContent="@page{size:210mm "+mm+"mm;margin:0}";' +
+                        'document.head.appendChild(s);' +
+                      '},200);' +
+                    '}' +
+                '<\/script>' : '')
                 + '</head><body>'
                 + bodyHtml
                 + '</body></html>';
