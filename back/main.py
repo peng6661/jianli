@@ -165,9 +165,10 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
 
         # Build command line arguments.
         # --headless=new is REQUIRED: --print-to-pdf is a headless-only flag.
-        # Xvfb provides DISPLAY=:99 which helps headless mode initialize in Docker.
-        # Previous headless failures were BEFORE D-Bus/font fixes; now all
-        # infrastructure is resolved, so headless+Xvfb should work.
+        # --no-zygote REMOVED: was a workaround when shm/seccomp were broken.
+        #   Now that shm=2gb + seccomp=unconfined are set, zygote works normally.
+        #   Without zygote, headless=new can't spawn renderer processes -> SIGKILL.
+        # --proxy-server=direct:// bypasses V8 proxy resolver init that hangs in Docker.
         cmd = [
             EDGE_PATH,
             "--headless=new",
@@ -181,13 +182,14 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             "--no-first-run",
             "--no-default-browser-check",
             "--password-store=basic",
-            "--disable-features=TranslateUI,Translate",
+            "--disable-features=TranslateUI,Translate,OptimizationGuide,OptimizationHints",
             "--disable-background-networking",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
             "--disable-crash-reporter",
-            "--no-zygote",
+            "--disable-component-update",
+            "--proxy-server=direct://",
             "--user-data-dir=/tmp/edge-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -349,13 +351,14 @@ def test_edge():
             "--no-first-run",
             "--no-default-browser-check",
             "--password-store=basic",
-            "--disable-features=TranslateUI,Translate",
+            "--disable-features=TranslateUI,Translate,OptimizationGuide,OptimizationHints",
             "--disable-background-networking",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
             "--disable-crash-reporter",
-            "--no-zygote",
+            "--disable-component-update",
+            "--proxy-server=direct://",
             "--user-data-dir=/tmp/edge-test-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -541,11 +544,19 @@ def diag_edge():
     except Exception as e:
         result["checks"]["fonts"] = {"error": str(e)}
 
-    # 6. PDF generation tests with multiple headless modes.
-    #    --print-to-pdf is a headless-only flag, so --headless is required.
-    #    We test 3 combinations to find which works in this Docker container.
-    #    All tests use --print-to-pdf (not --dump-dom) to test the actual
-    #    PDF generation path. Each test polls for the PDF file.
+    # 5.7. Memory check — OOM killer can cause SIGKILL (-9)
+    try:
+        meminfo = Path("/proc/meminfo").read_text()
+        mem_lines = [l for l in meminfo.splitlines()
+                     if l.startswith(("MemTotal", "MemFree", "MemAvailable", "SwapTotal", "SwapFree"))]
+        result["checks"]["memory"] = mem_lines
+    except Exception as e:
+        result["checks"]["memory"] = f"error: {e}"
+
+    # 6. PDF generation tests with multiple configurations.
+    #    Test 1 (headless_new): no --no-zygote + proxy fix (the new approach)
+    #    Test 2 (headless_no_zygote): with --no-zygote (old approach, for comparison)
+    #    Test 3 (headless_verbose): verbose logging to diagnose if still failing
     test_html = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
         "</head><body><h1>Diag Test</h1></body></html>"
@@ -554,7 +565,9 @@ def diag_edge():
     edge_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
     edge_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
 
-    # Common flags for all tests
+    # Common flags for all tests (--no-zygote removed: zygote works now that
+    # shm=2gb + seccomp=unconfined are set; --proxy-server=direct:// bypasses
+    # V8 proxy resolver init that hangs in Docker)
     common_flags = [
         "--disable-gpu",
         "--no-sandbox",
@@ -564,7 +577,7 @@ def diag_edge():
         "--password-store=basic",
         "--disable-background-networking",
         "--disable-crash-reporter",
-        "--no-zygote",
+        "--proxy-server=direct://",
         "--virtual-time-budget=10000",
         "--print-to-pdf-no-header",
     ]
@@ -572,8 +585,8 @@ def diag_edge():
     # Three test configurations to try
     pdf_tests = [
         ("headless_new", ["--headless=new"]),
-        ("headless_old", ["--headless=old"]),
-        ("single_process", ["--headless=new", "--single-process"]),
+        ("headless_no_zygote", ["--headless=new", "--no-zygote"]),
+        ("headless_verbose", ["--headless=new", "--enable-logging=stderr", "--v=1"]),
     ]
 
     for test_name, extra_flags in pdf_tests:
@@ -642,7 +655,7 @@ def diag_edge():
 
             result["checks"][f"pdf_{test_name}"] = {
                 "exit_code": process.returncode,
-                "stdout_preview": (stdout_data[:500] if stdout_data else "(empty)"),
+                "stdout_preview": (stdout_data[:2000] if stdout_data else "(empty)"),
                 "pdf_created": pdf_exists,
                 "pdf_size": pdf_size,
             }
