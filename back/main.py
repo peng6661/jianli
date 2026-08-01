@@ -95,33 +95,46 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
 
     Two modes based on the HTML content:
     - Default view (has .resume-paper, no .paginated-page):
-      Backend measures content height AFTER images decode, injects a
-      dynamic @page{size:210mm <height>mm} for a single-page PDF.
+      Backend measures content height and generates a single-page PDF
+      with explicit width/height parameters.
     - Paginated view (has .paginated-page):
-      Uses the static @page{size:A4} from CSS for multi-page PDF.
+      Uses standard A4 format for multi-page PDF.
 
-    The height measurement is done by the backend directly on the Playwright
-    page (not embedded JS), eliminating timing issues with image decoding.
+    Critical: measurement is done in PRINT media context with A4-width
+    viewport, matching the rendering context used by page.pdf().
+    This eliminates layout differences between screen and print that
+    caused content to overflow and paginate with large images.
     """
     page = None
     try:
         browser = await get_browser()
         page = await browser.new_page()
 
-        # 1. Set HTML content — domcontentloaded is enough since all
+        # 1. Set viewport to A4 dimensions (210mm x 297mm at 96dpi).
+        #    This ensures the layout at measurement time matches the
+        #    layout at PDF generation time.
+        await page.set_viewport_size({"width": 794, "height": 1123})
+
+        # 2. Switch to print media BEFORE setting content.
+        #    page.pdf() renders in print context; if we measure in screen
+        #    context, the layout may differ (font rendering, @media print
+        #    rules, sub-pixel rounding), causing the measured height to
+        #    be slightly shorter than the actual print height → overflow
+        #    → unwanted pagination.
+        await page.emulate_media("print")
+
+        # 3. Set HTML content — domcontentloaded is sufficient since all
         #    resources (images) are base64 inline, no external requests
         await page.set_content(html, wait_until="domcontentloaded")
 
-        # 2. Wait for all images to fully load and decode.
-        #    This is the critical step — base64 images decode asynchronously,
-        #    and measuring height before decode completes gives wrong results.
-        #    We replicate Edge's --virtual-time-budget behavior by explicitly
-        #    waiting for image decode to finish.
+        # 4. Wait for all images to fully load and decode.
+        #    Although images have explicit width/height (layout is stable),
+        #    we still wait to ensure fonts and images are fully rendered
+        #    before measuring.
         try:
             await page.evaluate(
                 """async () => {
                     const imgs = Array.from(document.querySelectorAll('img'));
-                    // Step 1: wait for all images to fire load/error
                     await Promise.all(imgs.map(img => {
                         if (img.complete && img.naturalWidth > 0) return Promise.resolve();
                         return new Promise(res => {
@@ -129,12 +142,11 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
                             img.addEventListener('error', res, {once: true});
                         });
                     }));
-                    // Step 2: wait for decode to complete
                     await Promise.all(imgs.map(img => {
                         if (img.decode) return img.decode().catch(() => {});
                         return Promise.resolve();
                     }));
-                    // Step 3: wait for layout to settle (two RAF cycles)
+                    // Wait for layout to settle
                     await new Promise(res => {
                         requestAnimationFrame(() => requestAnimationFrame(res));
                     });
@@ -144,53 +156,68 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
         except Exception as e:
             log.warning("Image decode wait timed out: %s", str(e))
 
-        # 3. Wait for fonts to be ready
+        # 5. Wait for fonts to be ready
         try:
             await page.evaluate("document.fonts.ready")
         except Exception:
             pass
 
-        # 4. Default view: measure content height and set dynamic @page size.
-        #    Paginated view: @page{size:A4} is already in the CSS, skip.
+        # 6. Determine view mode and generate PDF
         has_paginated = await page.evaluate(
             "document.querySelector('.paginated-page') !== null"
         )
-        if not has_paginated:
-            # Measure the .resume-paper content height in the Playwright page
-            height_px = await page.evaluate(
+
+        if has_paginated:
+            # Paginated view: standard A4 multi-page
+            # Use explicit format parameter — bypass @page CSS entirely
+            pdf_bytes = await page.pdf(
+                print_background=True,
+                format="A4",
+                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            )
+        else:
+            # Default view: single-page PDF with height = content height
+            # Measure twice with a short delay to ensure layout stability
+            h1 = await page.evaluate(
                 """() => {
                     const r = document.querySelector('.resume-paper');
-                    if (!r) return 0;
-                    // Use scrollHeight which includes all content + padding
-                    // Add small buffer (6px) to avoid rounding cutoff
-                    return r.scrollHeight + 6;
+                    return r ? r.scrollHeight : 0;
                 }"""
             )
-            if height_px and height_px > 0:
-                # Convert px to mm (96dpi: 1mm = 96/25.4 px ≈ 3.779 px)
-                height_mm = height_px / 96 * 25.4
-                height_mm = max(height_mm, 10)  # safety floor
-                await page.evaluate(
-                    f"""() => {{
-                        const s = document.createElement('style');
-                        s.textContent = '@page{{size:210mm {height_mm:.1f}mm;margin:0}}';
-                        document.head.appendChild(s);
-                    }}"""
-                )
-                log.info(
-                    "Default view: measured %dpx = %.1fmm, set single-page @page",
-                    height_px, height_mm,
-                )
+            await page.wait_for_timeout(200)
+            h2 = await page.evaluate(
+                """() => {
+                    const r = document.querySelector('.resume-paper');
+                    return r ? r.scrollHeight : 0;
+                }"""
+            )
+            # Use the larger value + buffer to account for any remaining
+            # sub-pixel differences between measurement and PDF rendering
+            height_px = max(h1, h2) + 20
 
-        # 5. Generate PDF
-        #    prefer_css_page_size=True: use the @page rule from CSS
-        #      - Default view: dynamically injected @page{size:210mm <height>mm}
-        #      - Paginated view: static @page{size:A4}
-        pdf_bytes = await page.pdf(
-            print_background=True,
-            prefer_css_page_size=True,
-            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-        )
+            if height_px > 20:
+                height_mm = height_px / 96 * 25.4
+                height_mm = max(height_mm, 10)
+                log.info(
+                    "Default view: measured h1=%d h2=%d, using %dpx = %.1fmm",
+                    h1, h2, height_px, height_mm,
+                )
+                # Use explicit width/height — bypass @page CSS entirely.
+                # This is more reliable than prefer_css_page_size=True
+                # because there's no ambiguity about which @page rule wins.
+                pdf_bytes = await page.pdf(
+                    print_background=True,
+                    width="210mm",
+                    height=f"{height_mm:.1f}mm",
+                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                )
+            else:
+                # Fallback: A4
+                pdf_bytes = await page.pdf(
+                    print_background=True,
+                    format="A4",
+                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                )
 
         log.info("PDF generated: %s (%d bytes)", filename, len(pdf_bytes))
         return pdf_bytes
