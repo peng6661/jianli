@@ -4492,12 +4492,12 @@
             if (viewMode === 'paginated') {
                 pageSizeRule = '@page { size: A4; margin: 0; }';
             } else {
-                // 不使用前端测量的高度——浏览器与 Edge headless 渲染存在差异。
-                // 改为在导出 HTML 中嵌入 JavaScript，让 Edge 自己测量内容并设置 @page。
-                // 先用一个足够大的尺寸占位，Edge 渲染时 JS 会修正
-                pageSizeRule = '@page { size: A4; margin: 0; }';
-                // 将 paper 的 padding-bottom 缩小，减少多余空白
-                // 实际修正由嵌入 HTML 的 JS 完成
+                // 默认视图：前端直接测量 .resume-paper 高度，设置 @page 规则
+                // 加缓冲弥补浏览器与 Edge headless 渲染差异
+                // 保留嵌入 JS 作为修正（Edge 中重新测量覆盖）
+                var measuredH = Math.ceil(paper.getBoundingClientRect().height) + 30;
+                var measuredMm = Math.ceil(measuredH / 3.779);
+                pageSizeRule = '@page { size: 210mm ' + measuredMm + 'mm; margin: 0; }';
             }
 
             // 构建完整的 PDF 用 HTML（复用预览 CSS，保证样式一致）
@@ -4530,6 +4530,24 @@
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
                 + '<title>' + title + '</title>'
                 + '<style>' + pdfCSS + '</style>'
+                + (viewMode !== 'paginated' ? '<script>' +
+                    'window.onload=function(){' +
+                      'setTimeout(function(){' +
+                        'var r=document.querySelector(".resume-paper");' +
+                        'if(!r)return;' +
+                        'var c=r.lastElementChild;' +
+                        'if(!c)return;' +
+                        'var t=r.getBoundingClientRect().top;' +
+                        'var b=c.getBoundingClientRect().bottom;' +
+                        'var m=parseInt(getComputedStyle(c).marginBottom)||0;' +
+                        'var h=b-t+m+6;' +
+                        'var mm=Math.ceil(h/3.779);' +
+                        'var s=document.createElement("style");' +
+                        's.textContent="@page{size:210mm "+mm+"mm;margin:0}";' +
+                        'document.head.appendChild(s);' +
+                      '},200);' +
+                    '}' +
+                '<\/script>' : '')
                 + '</head><body>'
                 + bodyHtml
                 + '</body></html>';

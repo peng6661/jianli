@@ -3,6 +3,7 @@ set -e
 
 echo "========================================"
 echo "  Resume Editor - Cloud Deployment"
+echo "  PDF Engine: Microsoft Edge headless"
 echo "========================================"
 echo ""
 
