@@ -5,15 +5,17 @@ Resume Editor - PDF Export Service (Cloud Edition)
 Architecture: localStorage cloud deployment = static site + lightweight backend
 - Uses WeasyPrint for HTML-to-PDF conversion (pure Python, no browser needed)
 - WeasyPrint renders images synchronously, eliminating async loading issues
-  that required Edge's --virtual-time-budget
 - Memory footprint ~50MB (vs 300-500MB for Edge/Chromium)
-- Supports @page rules, base64 images, CSS variables, flexbox (v60+)
+- Two-pass render: measures content height via box tree traversal, then
+  generates a single-page PDF with exact height (default view only)
 - No Git API, no database, stateless
 - CORS configurable via environment variable
 """
 
 import os
+import re
 import sys
+import math
 import logging
 from typing import Optional
 
@@ -53,7 +55,7 @@ log = logging.getLogger("resume-pdf")
 app = FastAPI(
     title="Resume Editor PDF Service",
     description="WeasyPrint HTML-to-PDF conversion (cloud edition)",
-    version="4.0.0",
+    version="5.0.0",
 )
 
 # CORS - configurable via ALLOWED_ORIGINS env var (comma-separated)
@@ -86,24 +88,147 @@ class HealthResponse(BaseModel):
 # ============================================
 # PDF Export Core
 # ============================================
-def convert_html_to_pdf(html: str, filename: str) -> bytes:
+
+# CSS injected into every PDF to fix Docker-specific rendering issues.
+# 1. Font override: --ant-font uses macOS/Windows fonts that don't exist
+#    in the Docker container. Replace with Liberation Sans (Arial-compatible)
+#    + WenQuanYi Zen Hei (CJK).
+# 2. Remove preview-only visual styles (border, shadow, rounded corners)
+#    that should not appear in the exported PDF.
+# 3. Ensure colors print correctly (WeasyPrint needs print-color-adjust).
+_PDF_OVERRIDE_CSS = """
+:root {
+    --ant-font: 'Liberation Sans', 'WenQuanYi Zen Hei', 'DejaVu Sans', sans-serif !important;
+}
+body, .resume-paper, .paginated-page {
+    font-family: 'Liberation Sans', 'WenQuanYi Zen Hei', 'DejaVu Sans', sans-serif !important;
+}
+.resume-paper {
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+"""
+
+
+def _remove_scripts(html: str) -> str:
+    """Remove all <script> tags. WeasyPrint does not execute JavaScript,
+    so any embedded scripts (e.g. the frontend's re-measurement script)
+    are dead code that only wastes bandwidth."""
+    return re.sub(
+        r"<script[^>]*>.*?</script>",
+        "",
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+
+def _inject_css(html: str, css: str) -> str:
+    """Inject a <style> block at the end of <head>.
+    Because CSS cascade rules resolve conflicts by order, styles injected
+    here override all preceding stylesheets."""
+    style_tag = f"<style>{css}</style>"
+    if "</head>" in html:
+        return html.replace("</head>", f"{style_tag}</head>", 1)
+    return style_tag + html
+
+
+def _is_paginated_view(html: str) -> bool:
+    """Check if the HTML uses A4 page size (paginated view).
+    The frontend sets @page { size: A4 } for paginated view and
+    @page { size: 210mm <N>mm } for default (single-page) view."""
+    return bool(re.search(r"@page\s*\{[^}]*size:\s*A4", html, re.IGNORECASE))
+
+
+def _measure_content_height_mm(html: str) -> int:
+    """Render HTML with a very tall page, then traverse WeasyPrint's
+    layout box tree to find the exact bottom position of all content.
+
+    This replaces the frontend's browser-based measurement
+    (getBoundingClientRect) which gives incorrect results because
+    WeasyPrint renders fonts and spacing differently from the browser.
+
+    Returns: content height in millimeters (with a small buffer).
     """
-    Convert HTML to PDF using WeasyPrint.
+    # Inject a very tall page so all content lands on a single page
+    measure_html = _inject_css(
+        html, "@page { size: 210mm 100000mm; margin: 0; }"
+    )
 
-    WeasyPrint is a pure-Python HTML/CSS rendering engine that produces
-    PDF directly without a browser. Key advantages over Edge headless:
+    try:
+        doc = HTML(string=measure_html).render()
+    except Exception as e:
+        log.warning("[measure] Render failed: %s, using A4 fallback", e)
+        return 297
 
-    1. Synchronous image rendering: base64 images are decoded during
-       layout, not asynchronously. No need for --virtual-time-budget.
-    2. Low memory: ~50MB vs 300-500MB for Chromium-based browsers.
-    3. Excellent @page support: designed for paged media, handles
-       custom page sizes (210mm x Hh) and page breaks natively.
-    4. No external process: runs in-process, no subprocess management,
-       no D-Bus, no Xvfb, no shared memory issues.
+    if not doc.pages:
+        return 297
 
-    The @page CSS rules embedded in the HTML control page size:
-    - Default view: @page{size:210mm <H>mm} (single page, height = content)
-    - Paginated view: @page{size:A4} (standard multi-page A4)
+    # Traverse the box tree to find the maximum content bottom position
+    max_bottom_px = 0
+
+    def visit_box(box):
+        nonlocal max_bottom_px
+        y = getattr(box, "position_y", 0) or 0
+        h = getattr(box, "height", 0) or 0
+        # margin_height() includes margins, which is more accurate
+        try:
+            mh = box.margin_height()
+            if mh is not None and mh > h:
+                h = mh
+        except (AttributeError, TypeError):
+            pass
+        bottom = y + h
+        if bottom > max_bottom_px:
+            max_bottom_px = bottom
+        for child in getattr(box, "children", []):
+            visit_box(child)
+
+    for page in doc.pages:
+        # WeasyPrint stores the root box under _page_box (internal API)
+        pb = getattr(page, "_page_box", None)
+        if pb is None:
+            pb = getattr(page, "page_box", None)
+        if pb is not None:
+            visit_box(pb)
+
+    if max_bottom_px > 0:
+        # 96 DPI: 1mm = 3.7795 px
+        height_mm = math.ceil(max_bottom_px / 3.7795) + 2  # 2mm buffer
+        log.info(
+            "[measure] Content height: %dpx -> %dmm", max_bottom_px, height_mm
+        )
+        return height_mm
+
+    # Fallback: render with A4 and use page count
+    log.warning("[measure] Box tree traversal returned 0, using A4 fallback")
+    a4_html = _inject_css(html, "@page { size: 210mm 297mm; margin: 0; }")
+    try:
+        a4_doc = HTML(string=a4_html).render()
+        num_pages = len(a4_doc.pages)
+        height_mm = num_pages * 297
+        log.info("[measure] Fallback: %d A4 pages -> %dmm", num_pages, height_mm)
+        return height_mm
+    except Exception:
+        return 297
+
+
+def convert_html_to_pdf(html: str, filename: str) -> bytes:
+    """Convert HTML to PDF using WeasyPrint with two-pass rendering.
+
+    For default (single-page) view:
+      Pass 1 - Render with a very tall page and traverse the layout box
+               tree to measure the exact content height.
+      Pass 2 - Re-render with @page { size: 210mm <measured>mm } to
+               produce a single-page PDF whose height matches the content.
+
+    For paginated view:
+      Render directly with A4 page size (WeasyPrint handles page breaks).
+
+    In both cases, the HTML is preprocessed to:
+      - Remove <script> tags (WeasyPrint does not execute JavaScript)
+      - Inject CSS overrides for Docker font compatibility and visual cleanup
     """
     if not WEASYPRINT_AVAILABLE:
         raise RuntimeError(
@@ -114,10 +239,28 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         log.info("Generating PDF via WeasyPrint: %s", filename)
         log.info("HTML length: %d chars", len(html))
 
-        # WeasyPrint renders HTML string to PDF bytes directly.
-        # The HTML contains all CSS inline (including @page rules),
-        # all images as base64 data URIs, so no external resources needed.
-        pdf_bytes = HTML(string=html).write_pdf()
+        # 1. Remove scripts (WeasyPrint ignores JavaScript)
+        html_clean = _remove_scripts(html)
+
+        # 2. Inject font + visual overrides
+        html_styled = _inject_css(html_clean, _PDF_OVERRIDE_CSS)
+
+        # 3. Determine view mode and render
+        is_paginated = _is_paginated_view(html_styled)
+
+        if is_paginated:
+            # Paginated view: A4 multi-page, WeasyPrint handles breaks
+            log.info("[pdf] Paginated view: rendering with A4 page size")
+            pdf_bytes = HTML(string=html_styled).write_pdf()
+        else:
+            # Default view: single page with content-determined height
+            height_mm = _measure_content_height_mm(html_styled)
+            log.info("[pdf] Default view: single page, height=%dmm", height_mm)
+            final_html = _inject_css(
+                html_styled,
+                f"@page {{ size: 210mm {height_mm}mm; margin: 0; }}",
+            )
+            pdf_bytes = HTML(string=final_html).write_pdf()
 
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise RuntimeError("WeasyPrint produced empty PDF")
@@ -145,17 +288,14 @@ def health_check():
 
 @app.get("/api/test-pdf")
 def test_pdf():
-    """
-    Minimal PDF test - generate a simple PDF to verify WeasyPrint works.
-    Replaces the old /api/test-edge endpoint.
-    """
+    """Minimal PDF test - generate a simple PDF to verify WeasyPrint works."""
     if not WEASYPRINT_AVAILABLE:
         return {"status": "failed", "error": "WeasyPrint not installed"}
 
     test_html = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
         '<style>@page { size: A4; margin: 2cm; }'
-        'body { font-family: sans-serif; font-size: 24px; }</style>'
+        "body { font-family: sans-serif; font-size: 24px; }</style>"
         "</head><body><h1>WeasyPrint Test</h1>"
         "<p>Hello from Docker</p>"
         '<p style="color: #1677ff;">Color test</p>'
@@ -186,8 +326,7 @@ def test_edge_alias():
 
 @app.post("/api/export-pdf")
 async def export_pdf(request: PdfExportRequest):
-    """
-    Convert HTML to PDF and return as download.
+    """Convert HTML to PDF and return as download.
 
     Request body:
         html: Full HTML document string
