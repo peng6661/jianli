@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation2 \
     # nginx for static file serving
     nginx \
+    # dbus daemon - Edge/Chromium needs D-Bus in containers,
+    # without it Edge hangs waiting for /run/dbus/system_bus_socket
+    dbus \
     # curl for healthcheck in docker-entrypoint
     && rm -rf /var/lib/apt/lists/*
 

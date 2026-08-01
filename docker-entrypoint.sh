@@ -7,6 +7,10 @@ echo "  PDF Engine: Microsoft Edge headless"
 echo "========================================"
 echo ""
 
+# Start D-Bus system daemon (Edge/Chromium requires it)
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || echo "  (dbus already running or unavailable)"
+
 # Start FastAPI backend in background
 echo "[1/2] Starting FastAPI PDF service (port 8080)..."
 cd /app
