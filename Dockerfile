@@ -21,7 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # dbus daemon - Edge/Chromium needs D-Bus in containers,
     # without it Edge hangs waiting for /run/dbus/system_bus_socket
     dbus \
-    # curl for healthcheck in docker-entrypoint
+    # strace - diagnostic tool to trace syscalls when Edge hangs
+    strace \
+    # procps - pgrep/pkill for process management in diagnostics
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Explicitly tell D-Bus clients (Edge) where the system bus socket is.

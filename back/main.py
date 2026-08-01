@@ -454,10 +454,84 @@ def diag_edge():
     except Exception as e:
         result["checks"]["missing_libs"] = f"error: {e}"
 
+    # 5.5. Check /dev/shm size and container capabilities
+    try:
+        df = subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=5)
+        result["checks"]["dev_shm"] = df.stdout.strip()
+    except Exception as e:
+        result["checks"]["dev_shm"] = f"error: {e}"
+
+    try:
+        cap = subprocess.run(["cat", "/proc/self/status"], capture_output=True, text=True, timeout=5)
+        cap_lines = [l for l in cap.stdout.splitlines() if "Cap" in l]
+        result["checks"]["capabilities"] = cap_lines
+    except Exception as e:
+        result["checks"]["capabilities"] = f"error: {e}"
+
+    # 5.6. strace test — trace Edge syscalls to find where it hangs
+    #      This captures the last 40 syscalls before Edge is killed
+    test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
+    temp_html = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(test_html)
+            temp_html = f.name
+
+        strace_log = "/tmp/edge_strace.log"
+        strace_cmd = [
+            "timeout", "8",
+            "strace", "-f", "-e", "trace=desc,ipc,network,process,signal,memory,futex",
+            "-o", strace_log,
+            EDGE_PATH,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--disable-background-networking",
+            "--no-zygote",
+            "--user-data-dir=/tmp/edge-strace-profile",
+            "--dump-dom",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        strace_env = os.environ.copy()
+        strace_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        strace_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
+        sp = subprocess.run(strace_cmd, capture_output=True, text=True, timeout=12, env=strace_env)
+
+        # Read last 40 lines of strace log
+        strace_output = Path(strace_log).read_text(errors="replace") if Path(strace_log).exists() else ""
+        last_lines = strace_output.strip().splitlines()[-40:] if strace_output else []
+
+        result["checks"]["strace"] = {
+            "exit_code": sp.returncode,
+            "last_syscalls": last_lines,
+        }
+        # Clean up
+        Path(strace_log).unlink(missing_ok=True)
+    except subprocess.TimeoutExpired:
+        strace_output = Path(strace_log).read_text(errors="replace") if Path(strace_log).exists() else ""
+        last_lines = strace_output.strip().splitlines()[-40:] if strace_output else []
+        result["checks"]["strace"] = {
+            "status": "strace_timeout",
+            "last_syscalls": last_lines,
+        }
+        Path(strace_log).unlink(missing_ok=True)
+    except Exception as e:
+        result["checks"]["strace"] = {"status": "error", "message": str(e)}
+    finally:
+        if temp_html:
+            Path(temp_html).unlink(missing_ok=True)
+
     # 6. --dump-dom test (simplest Edge command, no PDF generation)
     #    If this works but --print-to-pdf doesn't, the issue is PDF-specific.
     #    If this also hangs, the issue is Edge initialization in the container.
-    test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
     temp_html = None
     try:
         with tempfile.NamedTemporaryFile(
