@@ -179,6 +179,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
+            "--no-zygote",
             "--user-data-dir=/tmp/edge-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -323,6 +324,7 @@ def test_edge():
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
+            "--no-zygote",
             "--user-data-dir=/tmp/edge-test-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
@@ -560,6 +562,61 @@ def diag_edge():
             }
     except Exception as e:
         result["checks"]["dump_dom_old_headless"] = {"status": "error", "message": str(e)}
+    finally:
+        if temp_html:
+            Path(temp_html).unlink(missing_ok=True)
+
+    # 8. --dump-dom with --single-process (bypass zygote + renderer process spawning)
+    #    If this works when others don't, the issue is process spawning in Docker.
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(test_html)
+            temp_html = f.name
+
+        cmd_sp = [
+            EDGE_PATH,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--disable-background-networking",
+            "--no-zygote",
+            "--single-process",
+            "--user-data-dir=/tmp/edge-diag3-profile",
+            "--dump-dom",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        process3 = subprocess.Popen(
+            cmd_sp,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=edge_env,
+        )
+
+        try:
+            stdout3, _ = process3.communicate(timeout=10)
+            result["checks"]["dump_dom_single_process"] = {
+                "status": "ok" if process3.returncode == 0 else f"exit_{process3.returncode}",
+                "exit_code": process3.returncode,
+                "stdout_preview": (stdout3[:500] if stdout3 else "(empty)"),
+            }
+        except subprocess.TimeoutExpired:
+            process3.kill()
+            stdout3, _ = process3.communicate()
+            result["checks"]["dump_dom_single_process"] = {
+                "status": "timeout",
+                "stdout_preview": (stdout3[:500] if stdout3 else "(empty)"),
+            }
+    except Exception as e:
+        result["checks"]["dump_dom_single_process"] = {"status": "error", "message": str(e)}
     finally:
         if temp_html:
             Path(temp_html).unlink(missing_ok=True)
