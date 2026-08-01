@@ -167,6 +167,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-software-rasterizer",
             "--disable-extensions",
             "--disable-sync",
             "--hide-scrollbars",
@@ -180,6 +181,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
 
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
