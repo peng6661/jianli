@@ -8,8 +8,26 @@ echo "========================================"
 echo ""
 
 # Start D-Bus system daemon (Edge/Chromium requires it)
+# Without dbus-daemon, Edge hangs indefinitely on D-Bus connect attempts
 mkdir -p /run/dbus
-dbus-daemon --system --fork 2>/dev/null || echo "  (dbus already running or unavailable)"
+rm -f /run/dbus/system_bus_socket  # Remove stale socket from previous run
+if command -v dbus-daemon &>/dev/null; then
+    dbus-daemon --system --fork 2>&1 || echo "  WARNING: dbus-daemon failed to start"
+    # Wait for socket to appear
+    for i in $(seq 1 5); do
+        if [ -S /run/dbus/system_bus_socket ]; then
+            echo "  D-Bus system bus ready at /run/dbus/system_bus_socket"
+            break
+        fi
+        sleep 0.5
+    done
+    # Verify
+    if [ ! -S /run/dbus/system_bus_socket ]; then
+        echo "  WARNING: D-Bus socket not created! Edge may hang."
+    fi
+else
+    echo "  WARNING: dbus-daemon not found, Edge may hang on D-Bus"
+fi
 
 # Start FastAPI backend in background
 echo "[1/2] Starting FastAPI PDF service (port 8080)..."

@@ -24,6 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # curl for healthcheck in docker-entrypoint
     && rm -rf /var/lib/apt/lists/*
 
+# Explicitly tell D-Bus clients (Edge) where the system bus socket is.
+# Without this, Edge gets "Could not parse server address: Unknown address type"
+# because the container has no desktop session to provide the address.
+ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+
 # Add Microsoft Edge apt repository and install
 RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-edge.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list \

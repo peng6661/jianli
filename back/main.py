@@ -189,12 +189,20 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         log.info("Generating PDF via Edge headless: %s", filename)
         log.info("Edge command: %s", " ".join(cmd))
 
+        # Explicitly set D-Bus env vars for Edge subprocess.
+        # Docker ENV sets these globally, but we ensure them here too
+        # in case the parent process environment was modified.
+        edge_env = os.environ.copy()
+        edge_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        edge_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=edge_env,
         )
 
         try:
@@ -303,10 +311,20 @@ def test_edge():
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-software-rasterizer",
+            "--disable-extensions",
+            "--disable-sync",
+            "--hide-scrollbars",
             "--no-first-run",
             "--no-default-browser-check",
             "--password-store=basic",
-            "--user-data-dir=/tmp/edge-profile",
+            "--disable-features=TranslateUI,Translate",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows",
+            "--user-data-dir=/tmp/edge-test-profile",
+            "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
             f"--print-to-pdf={temp_pdf}",
             Path(temp_html).absolute().as_uri(),
@@ -314,12 +332,18 @@ def test_edge():
 
         log.info("[test-edge] Running: %s", " ".join(cmd))
 
+        # Same D-Bus env as main export
+        edge_env = os.environ.copy()
+        edge_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        edge_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=edge_env,
         )
 
         try:
