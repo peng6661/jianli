@@ -3,7 +3,8 @@
 Resume Editor - PDF Export Service (Cloud Edition)
 
 Architecture: localStorage cloud deployment = static site + lightweight backend
-- Uses Microsoft Edge headless for PDF rendering (same engine as local deployment)
+- Uses Microsoft Edge + Xvfb for PDF rendering (same engine as local deployment)
+  Edge headless modes hang in Docker; Xvfb virtual display bypasses this.
 - Edge's --virtual-time-budget ensures all async operations (image decode, fonts)
   complete before PDF generation, eliminating pagination issues with large images
 - No Git API, no database, stateless
@@ -41,7 +42,7 @@ log = logging.getLogger("resume-pdf")
 # ============================================
 app = FastAPI(
     title="Resume Editor PDF Service",
-    description="Edge headless HTML-to-PDF conversion (cloud edition)",
+    description="Edge + Xvfb HTML-to-PDF conversion (cloud edition)",
     version="3.0.0",
 )
 
@@ -123,7 +124,7 @@ class HealthResponse(BaseModel):
 # ============================================
 def convert_html_to_pdf(html: str, filename: str) -> bytes:
     """
-    Convert HTML to PDF using Edge headless mode.
+    Convert HTML to PDF using Edge + Xvfb (non-headless mode).
 
     Uses Edge's --virtual-time-budget to fast-forward all async operations
     (image decode, font loading, setTimeout), ensuring the page is fully
@@ -657,7 +658,7 @@ if __name__ == "__main__":
     print(f"  Export:   POST http://{host}:{port}/api/export-pdf")
     print(f"  CORS:     {_allowed_origins}")
     print()
-    print("  PDF Engine: Microsoft Edge headless")
+    print("  PDF Engine: Microsoft Edge + Xvfb")
     if EDGE_PATH:
         print(f"  Edge:     {EDGE_PATH}")
     else:
