@@ -164,14 +164,16 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         Path(temp_pdf).unlink(missing_ok=True)
 
         # Build command line arguments.
-        # --headless=new is REQUIRED: --print-to-pdf is a headless-only flag.
-        # --no-zygote REMOVED: was a workaround when shm/seccomp were broken.
-        #   Now that shm=2gb + seccomp=unconfined are set, zygote works normally.
-        #   Without zygote, headless=new can't spawn renderer processes -> SIGKILL.
-        # --proxy-server=direct:// bypasses V8 proxy resolver init that hangs in Docker.
+        # --single-process: runs all Edge code in ONE process (browser+renderer+GPU).
+        #   Without it, Edge spawns 5+ processes → OOM killer kills uvicorn → crash.
+        #   This is the #1 fix for Edge in resource-constrained Docker containers.
+        # --proxy-server=direct://: bypasses V8 Proxy resolver init that errors/hangs
+        #   in single-process mode (previous single_process test showed this error).
+        # --headless=new: required for --print-to-pdf to work.
         cmd = [
             EDGE_PATH,
             "--headless=new",
+            "--single-process",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -341,6 +343,7 @@ def test_edge():
         cmd = [
             EDGE_PATH,
             "--headless=new",
+            "--single-process",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -582,11 +585,16 @@ def diag_edge():
         "--print-to-pdf-no-header",
     ]
 
-    # Three test configurations to try
+    # Three test configurations:
+    # 1. single_process: --single-process + --proxy-server=direct:// (PRIMARY approach)
+    #    Single-process = minimal memory, no child processes → no OOM killer
+    #    --proxy-server=direct:// bypasses V8 Proxy resolver error in single-process mode
+    # 2. single_verbose: same + verbose logging (to see where it fails if it does)
+    # 3. multi_process: NO --single-process (to compare: does multi-process OOM?)
     pdf_tests = [
-        ("headless_new", ["--headless=new"]),
-        ("headless_no_zygote", ["--headless=new", "--no-zygote"]),
-        ("headless_verbose", ["--headless=new", "--enable-logging=stderr", "--v=1"]),
+        ("single_process", ["--headless=new", "--single-process"]),
+        ("single_verbose", ["--headless=new", "--single-process", "--enable-logging=stderr", "--v=1"]),
+        ("multi_process", ["--headless=new"]),
     ]
 
     for test_name, extra_flags in pdf_tests:
