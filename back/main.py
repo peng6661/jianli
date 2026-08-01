@@ -163,7 +163,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         # Build command line arguments
         cmd = [
             EDGE_PATH,
-            "--headless",
+            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -171,6 +171,14 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
             "--disable-extensions",
             "--disable-sync",
             "--hide-scrollbars",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=TranslateUI,Translate",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows",
+            "--user-data-dir=/tmp/edge-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
             f"--print-to-pdf={temp_pdf}",
@@ -178,6 +186,7 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         ]
 
         log.info("Generating PDF via Edge headless: %s", filename)
+        log.info("Edge command: %s", " ".join(cmd))
 
         process = subprocess.Popen(
             cmd,
@@ -188,13 +197,18 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         )
 
         try:
-            stdout_data, _ = process.communicate(timeout=60)
+            stdout_data, _ = process.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            stdout_data, _ = process.communicate()  # Read remaining output after kill
+            log.error("Edge TIMED OUT (30s). Edge output:\n%s",
+                      stdout_data[:3000] if stdout_data else "(empty)")
             # Kill any lingering Edge processes (Linux: pkill, Windows: taskkill)
             _kill_edge_processes()
-            raise RuntimeError("Edge browser timed out, PDF generation failed")
+            raise RuntimeError(
+                "Edge browser timed out (30s). "
+                f"Edge output: {stdout_data[:500] if stdout_data else '(empty)'}"
+            )
 
         exit_code = process.returncode
         if exit_code != 0:
@@ -255,6 +269,93 @@ def health_check():
         edge_found=EDGE_PATH is not None,
         edge_path=EDGE_PATH,
     )
+
+
+@app.get("/api/test-edge")
+def test_edge():
+    """Minimal Edge test - generate a simple PDF to verify Edge works in this container."""
+    if EDGE_PATH is None:
+        raise HTTPException(status_code=503, detail="Edge browser not found")
+
+    test_html = (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<style>body{font-size:24px;}</style>'
+        "</head><body><h1>Edge Test</h1><p>Hello from Docker</p></body></html>"
+    )
+
+    temp_html = None
+    temp_pdf = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(test_html)
+            temp_html = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            temp_pdf = f.name
+        Path(temp_pdf).unlink(missing_ok=True)
+
+        cmd = [
+            EDGE_PATH,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--user-data-dir=/tmp/edge-profile",
+            "--print-to-pdf-no-header",
+            f"--print-to-pdf={temp_pdf}",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        log.info("[test-edge] Running: %s", " ".join(cmd))
+
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        try:
+            stdout_data, _ = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout_data, _ = process.communicate()
+            log.error("[test-edge] TIMEOUT (15s). Output:\n%s",
+                      stdout_data[:2000] if stdout_data else "(empty)")
+            return {
+                "status": "timeout",
+                "exit_code": None,
+                "stdout": stdout_data[:1000] if stdout_data else "",
+                "pdf_created": False,
+            }
+
+        pdf_path = Path(temp_pdf)
+        pdf_exists = pdf_path.exists()
+        pdf_size = pdf_path.stat().st_size if pdf_exists else 0
+
+        result = {
+            "status": "ok" if pdf_exists and pdf_size > 0 else "failed",
+            "exit_code": process.returncode,
+            "stdout": stdout_data[:1000] if stdout_data else "",
+            "pdf_created": pdf_exists,
+            "pdf_size": pdf_size,
+        }
+        log.info("[test-edge] Result: %s", result)
+        return result
+
+    except Exception as e:
+        log.error("[test-edge] Exception: %s", str(e))
+        return {"status": "error", "message": str(e)}
+    finally:
+        for tmp in [temp_html, temp_pdf]:
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
+
 
 
 @app.post("/api/export-pdf")
