@@ -6,24 +6,40 @@
 
 FROM python:3.12-slim
 
-# Install system dependencies:
-# - Edge: microsoft-edge-stable (Blink engine, same as browser)
-# - dbus: Edge needs D-Bus on Linux
-# - Fonts: wqy-zenhei (CJK ~10MB), liberation2 (Latin, Arial-compatible)
-# - nginx: static file serving
+# ============================================
+# Layer 1: Base packages (fonts, dbus, nginx, curl, gnupg)
+# This layer is cached separately from Edge installation.
+# ============================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-zenhei \
     fonts-liberation2 \
     dbus \
     nginx \
-    curl gnupg \
-    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-        | gpg --dearmor -o /usr/share/keyrings/microsoft-edge.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main" \
-        > /etc/apt/sources.list.d/microsoft-edge.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends microsoft-edge-stable \
+    curl gnupg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Layer 2: Install Microsoft Edge
+# Download GPG key with retry (server TLS can be flaky).
+# Falls back to wget if curl fails.
+# ============================================
+RUN for i in 1 2 3 4 5; do \
+        echo "Attempt $i: downloading Microsoft GPG key..." && \
+        curl -fsSL --connect-timeout 15 --max-time 60 \
+            https://packages.microsoft.com/keys/microsoft.asc \
+            -o /tmp/microsoft.asc && break || \
+        (echo "curl failed, trying wget..." && \
+         wget -q --timeout=60 -O /tmp/microsoft.asc \
+            https://packages.microsoft.com/keys/microsoft.asc && break) || \
+        (echo "Attempt $i failed, retrying in 5s..." && sleep 5); \
+    done && \
+    gpg --dearmor -o /usr/share/keyrings/microsoft-edge.gpg /tmp/microsoft.asc && \
+    rm -f /tmp/microsoft.asc && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main" \
+        > /etc/apt/sources.list.d/microsoft-edge.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends microsoft-edge-stable && \
+    rm -rf /var/lib/apt/lists/*
 
 # D-Bus environment (Edge connects to D-Bus on Linux)
 ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
