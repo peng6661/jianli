@@ -11,9 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     apt-transport-https \
-    # Chinese fonts for PDF rendering
-    fonts-noto-cjk \
-    fonts-noto-cjk-extra \
+    # Lightweight CJK font (~10MB single file, covers GB2312/GBK).
+    # DO NOT use fonts-noto-cjk / fonts-noto-cjk-extra!
+    # Edge loads ALL installed fonts into memory on startup.
+    # Noto CJK + extra = 280+MB of .ttc files, takes 70+ seconds
+    # to load in Docker overlay2 fs, causing Edge to timeout.
+    # wqy-zenhei loads in ~2 seconds.
+    fonts-wqy-zenhei \
     # Latin fonts (Arial/Helvetica metric-compatible equivalents)
     fonts-liberation2 \
     # nginx for static file serving
@@ -21,10 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # dbus daemon - Edge/Chromium needs D-Bus in containers,
     # without it Edge hangs waiting for /run/dbus/system_bus_socket
     dbus \
-    # strace - diagnostic tool to trace syscalls when Edge hangs
-    strace \
-    # procps - pgrep/pkill for process management in diagnostics
-    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Explicitly tell D-Bus clients (Edge) where the system bus socket is.

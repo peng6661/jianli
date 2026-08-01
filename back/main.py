@@ -349,11 +349,11 @@ def test_edge():
         )
 
         try:
-            stdout_data, _ = process.communicate(timeout=15)
+            stdout_data, _ = process.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
             stdout_data, _ = process.communicate()
-            log.error("[test-edge] TIMEOUT (15s). Output:\n%s",
+            log.error("[test-edge] TIMEOUT (30s). Output:\n%s",
                       stdout_data[:2000] if stdout_data else "(empty)")
             # Even after timeout+kill, PDF might have been generated before exit
             pdf_path = Path(temp_pdf)
@@ -424,17 +424,24 @@ def diag_edge():
         "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", "(unset)"),
     }
 
-    # 3. dbus-daemon process running?
+    # 3. dbus-daemon process running? (scan /proc, no external deps)
+    dbus_running = False
+    dbus_pid = None
     try:
-        pgrep = subprocess.run(
-            ["pgrep", "-x", "dbus-daemon"],
-            capture_output=True, text=True, timeout=5,
-        )
-        result["checks"]["dbus_daemon_running"] = pgrep.returncode == 0
-        if pgrep.returncode == 0:
-            result["checks"]["dbus_daemon_pid"] = pgrep.stdout.strip()
-    except Exception as e:
-        result["checks"]["dbus_daemon_running"] = f"error: {e}"
+        for proc_dir in Path("/proc").iterdir():
+            if proc_dir.name.isdigit():
+                comm_file = proc_dir / "comm"
+                if comm_file.exists():
+                    comm = comm_file.read_text(errors="replace").strip()
+                    if "dbus-daemon" in comm:
+                        dbus_running = True
+                        dbus_pid = proc_dir.name
+                        break
+    except Exception:
+        pass
+    result["checks"]["dbus_daemon_running"] = dbus_running
+    if dbus_pid:
+        result["checks"]["dbus_daemon_pid"] = dbus_pid
 
     # 4. Socket exists?
     socket_path = Path("/run/dbus/system_bus_socket")
@@ -468,70 +475,33 @@ def diag_edge():
     except Exception as e:
         result["checks"]["capabilities"] = f"error: {e}"
 
-    # 5.6. strace test — trace Edge syscalls to find where it hangs
-    #      This captures the last 40 syscalls before Edge is killed
-    test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
-    temp_html = None
+    # 5.6. Font inventory — list installed font files and sizes.
+    #      Edge loads ALL fonts on startup; large fonts cause timeouts.
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".html", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(test_html)
-            temp_html = f.name
-
-        strace_log = "/tmp/edge_strace.log"
-        strace_cmd = [
-            "timeout", "8",
-            "strace", "-f", "-e", "trace=desc,ipc,network,process,signal,memory,futex",
-            "-o", strace_log,
-            EDGE_PATH,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--disable-background-networking",
-            "--no-zygote",
-            "--user-data-dir=/tmp/edge-strace-profile",
-            "--dump-dom",
-            Path(temp_html).absolute().as_uri(),
-        ]
-
-        strace_env = os.environ.copy()
-        strace_env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
-        strace_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
-
-        sp = subprocess.run(strace_cmd, capture_output=True, text=True, timeout=12, env=strace_env)
-
-        # Read last 40 lines of strace log
-        strace_output = Path(strace_log).read_text(errors="replace") if Path(strace_log).exists() else ""
-        last_lines = strace_output.strip().splitlines()[-40:] if strace_output else []
-
-        result["checks"]["strace"] = {
-            "exit_code": sp.returncode,
-            "last_syscalls": last_lines,
+        font_files = []
+        font_dirs = [Path("/usr/share/fonts"), Path("/usr/local/share/fonts")]
+        for font_dir in font_dirs:
+            if font_dir.exists():
+                for f in font_dir.rglob("*"):
+                    if f.is_file() and f.suffix in (".ttc", ".ttf", ".otf"):
+                        stat = f.stat()
+                        font_files.append({
+                            "path": str(f),
+                            "size_mb": round(stat.st_size / 1048576, 1),
+                        })
+        total_mb = round(sum(f["size_mb"] for f in font_files), 1)
+        result["checks"]["fonts"] = {
+            "total_files": len(font_files),
+            "total_mb": total_mb,
+            "files": font_files[:20],
         }
-        # Clean up
-        Path(strace_log).unlink(missing_ok=True)
-    except subprocess.TimeoutExpired:
-        strace_output = Path(strace_log).read_text(errors="replace") if Path(strace_log).exists() else ""
-        last_lines = strace_output.strip().splitlines()[-40:] if strace_output else []
-        result["checks"]["strace"] = {
-            "status": "strace_timeout",
-            "last_syscalls": last_lines,
-        }
-        Path(strace_log).unlink(missing_ok=True)
     except Exception as e:
-        result["checks"]["strace"] = {"status": "error", "message": str(e)}
-    finally:
-        if temp_html:
-            Path(temp_html).unlink(missing_ok=True)
+        result["checks"]["fonts"] = {"error": str(e)}
 
     # 6. --dump-dom test (simplest Edge command, no PDF generation)
     #    If this works but --print-to-pdf doesn't, the issue is PDF-specific.
     #    If this also hangs, the issue is Edge initialization in the container.
+    test_html = '<!DOCTYPE html><html><body><h1>Diag Test</h1></body></html>'
     temp_html = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -550,6 +520,7 @@ def diag_edge():
             "--no-default-browser-check",
             "--password-store=basic",
             "--disable-background-networking",
+            "--no-zygote",
             "--user-data-dir=/tmp/edge-diag-profile",
             "--dump-dom",
             Path(temp_html).absolute().as_uri(),
@@ -606,6 +577,7 @@ def diag_edge():
             "--no-default-browser-check",
             "--password-store=basic",
             "--disable-background-networking",
+            "--no-zygote",
             "--user-data-dir=/tmp/edge-diag2-profile",
             "--dump-dom",
             Path(temp_html).absolute().as_uri(),

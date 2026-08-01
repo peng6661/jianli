@@ -11,10 +11,8 @@ services:
     # Edge/Chrome needs these to run in Docker containers:
     init: true                    # Use tini as PID 1 (proper zombie reaping + signal forwarding)
     shm_size: "2gb"               # Chrome needs >64MB shared memory for rendering
-    privileged: true              # DIAGNOSTIC: remove ALL restrictions to isolate the issue
     security_opt:
       - seccomp:unconfined       # Docker's default seccomp profile blocks syscalls Edge needs
-      - apparmor:unconfined       # Host AppArmor profile may also block Edge
     ports:
       - "8080:80"
     environment:
