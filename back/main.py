@@ -164,15 +164,15 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
         Path(temp_pdf).unlink(missing_ok=True)
 
         # Build command line arguments.
+        # --headless=old: old headless mode (simpler than --headless=new, doesn't use
+        #   Aura window system). --headless=new caused SIGTRAP crash in single-process
+        #   mode (V8 Proxy resolver error + crashpad).
         # --single-process: runs all Edge code in ONE process (browser+renderer+GPU).
-        #   Without it, Edge spawns 5+ processes → OOM killer kills uvicorn → crash.
-        #   This is the #1 fix for Edge in resource-constrained Docker containers.
-        # --proxy-server=direct://: bypasses V8 Proxy resolver init that errors/hangs
-        #   in single-process mode (previous single_process test showed this error).
-        # --headless=new: required for --print-to-pdf to work.
+        #   Without it, Edge spawns 5+ processes → OOM killer (server has 266MB free, 0 swap).
+        # --proxy-server=direct://: attempt to bypass V8 Proxy resolver (may not fully work).
         cmd = [
             EDGE_PATH,
-            "--headless=new",
+            "--headless=old",
             "--single-process",
             "--disable-gpu",
             "--no-sandbox",
@@ -342,7 +342,7 @@ def test_edge():
 
         cmd = [
             EDGE_PATH,
-            "--headless=new",
+            "--headless=old",
             "--single-process",
             "--disable-gpu",
             "--no-sandbox",
@@ -423,7 +423,7 @@ def test_edge():
         result = {
             "status": "ok" if pdf_exists and pdf_size > 0 else "failed",
             "exit_code": process.returncode,
-            "stdout": stdout_data[:1000] if stdout_data else "",
+            "stdout": stdout_data[:3000] if stdout_data else "",
             "pdf_created": pdf_exists,
             "pdf_size": pdf_size,
         }
@@ -586,15 +586,16 @@ def diag_edge():
     ]
 
     # Three test configurations:
-    # 1. single_process: --single-process + --proxy-server=direct:// (PRIMARY approach)
-    #    Single-process = minimal memory, no child processes → no OOM killer
-    #    --proxy-server=direct:// bypasses V8 Proxy resolver error in single-process mode
-    # 2. single_verbose: same + verbose logging (to see where it fails if it does)
-    # 3. multi_process: NO --single-process (to compare: does multi-process OOM?)
+    # 1. headless_old_single: --headless=old + --single-process (old headless is simpler,
+    #    doesn't use Aura window system, might avoid SIGTRAP crash)
+    # 2. headless_new_verbose: --headless=new + --single-process + very verbose logging
+    #    (--v=2) to capture the full crash sequence
+    # 3. headless_old_multi: --headless=old without --single-process (old headless uses
+    #    fewer processes than new, might not OOM with 266MB free)
     pdf_tests = [
-        ("single_process", ["--headless=new", "--single-process"]),
-        ("single_verbose", ["--headless=new", "--single-process", "--enable-logging=stderr", "--v=1"]),
-        ("multi_process", ["--headless=new"]),
+        ("headless_old_single", ["--headless=old", "--single-process"]),
+        ("headless_new_verbose", ["--headless=new", "--single-process", "--enable-logging=stderr", "--v=2"]),
+        ("headless_old_multi", ["--headless=old"]),
     ]
 
     for test_name, extra_flags in pdf_tests:
@@ -663,7 +664,7 @@ def diag_edge():
 
             result["checks"][f"pdf_{test_name}"] = {
                 "exit_code": process.returncode,
-                "stdout_preview": (stdout_data[:2000] if stdout_data else "(empty)"),
+                "stdout_preview": (stdout_data[:8000] if stdout_data else "(empty)"),
                 "pdf_created": pdf_exists,
                 "pdf_size": pdf_size,
             }
