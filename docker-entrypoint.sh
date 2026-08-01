@@ -3,7 +3,7 @@ set -e
 
 echo "========================================"
 echo "  Resume Editor - Cloud Deployment"
-echo "  PDF Engine: Edge (primary) + WeasyPrint (fallback)"
+echo "  PDF Engine: Edge (Blink = same as browser)"
 echo "========================================"
 echo ""
 

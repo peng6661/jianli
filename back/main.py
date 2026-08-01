@@ -2,22 +2,16 @@
 """
 Resume Editor - PDF Export Service (Cloud Edition)
 
-Dual-engine architecture:
-  Primary: Microsoft Edge headless (Blink engine = same as browser preview)
-  Fallback: WeasyPrint (pure Python, ~50MB, for when Edge is unavailable)
-
+Uses Microsoft Edge headless (Blink engine) to render HTML to PDF.
 Edge produces PDFs that match the browser preview exactly because it uses
-the same rendering engine (Blink). WeasyPrint is kept as a fallback for
-environments where Edge cannot run.
+the same rendering engine (Blink).
 
 A 2GB swap file is created at container startup (see docker-entrypoint.sh)
 to provide Edge with enough virtual memory on resource-constrained servers.
 """
 
 import os
-import re
 import sys
-import math
 import time
 import shutil
 import logging
@@ -31,20 +25,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-
-# WeasyPrint (fallback engine)
-try:
-    from weasyprint import HTML, __version__ as WEASYPRINT_VERSION
-    WEASYPRINT_AVAILABLE = True
-except ImportError:
-    try:
-        import weasyprint
-        from weasyprint import HTML
-        WEASYPRINT_VERSION = getattr(weasyprint, "__version__", "unknown")
-        WEASYPRINT_AVAILABLE = True
-    except ImportError:
-        WEASYPRINT_AVAILABLE = False
-        WEASYPRINT_VERSION = None
 
 # ============================================
 # Logging
@@ -85,7 +65,7 @@ def find_edge() -> Optional[str]:
                 return p
     except Exception:
         pass
-    log.warning("Edge not found, will use WeasyPrint fallback")
+    log.warning("Edge not found, PDF export unavailable")
     return None
 
 
@@ -111,8 +91,8 @@ def get_edge_version() -> Optional[str]:
 # ============================================
 app = FastAPI(
     title="Resume Editor PDF Service",
-    description="Edge (primary) + WeasyPrint (fallback) PDF conversion",
-    version="6.0.0",
+    description="Edge headless PDF conversion (Blink = same as browser preview)",
+    version="7.0.0",
 )
 
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
@@ -140,8 +120,6 @@ class HealthResponse(BaseModel):
     engine: str
     edge_available: bool = False
     edge_version: Optional[str] = None
-    weasyprint_available: bool = False
-    weasyprint_version: Optional[str] = None
 
 
 # ============================================
@@ -176,13 +154,8 @@ def _inject_css(html: str, css: str) -> str:
     return style_tag + html
 
 
-def _is_paginated_view(html: str) -> bool:
-    """Check if the HTML uses A4 page size (paginated view)."""
-    return bool(re.search(r"@page\s*\{[^}]*size:\s*A4", html, re.IGNORECASE))
-
-
 # ============================================
-# Edge PDF conversion (primary engine)
+# Edge PDF conversion
 # ============================================
 def _convert_with_edge(html: str, filename: str) -> bytes:
     """Convert HTML to PDF using Edge headless.
@@ -292,142 +265,20 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
 
 
 # ============================================
-# WeasyPrint PDF conversion (fallback engine)
-# ============================================
-def _remove_scripts(html: str) -> str:
-    """Remove all <script> tags. WeasyPrint does not execute JavaScript."""
-    return re.sub(
-        r"<script[^>]*>.*?</script>",
-        "",
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-
-def _measure_content_height_mm(html: str) -> int:
-    """Render with a very tall page, traverse box tree to find exact height."""
-    measure_html = _inject_css(html, "@page { size: 210mm 100000mm; margin: 0; }")
-
-    try:
-        doc = HTML(string=measure_html).render()
-    except Exception as e:
-        log.warning("[WeasyPrint] Measure render failed: %s, using A4 fallback", e)
-        return 297
-
-    if not doc.pages:
-        return 297
-
-    max_bottom_px = 0
-
-    def visit_box(box):
-        nonlocal max_bottom_px
-        y = getattr(box, "position_y", 0) or 0
-        h = getattr(box, "height", 0) or 0
-        try:
-            mh = box.margin_height()
-            if mh is not None and mh > h:
-                h = mh
-        except (AttributeError, TypeError):
-            pass
-        bottom = y + h
-        if bottom > max_bottom_px:
-            max_bottom_px = bottom
-        for child in getattr(box, "children", []):
-            visit_box(child)
-
-    for page in doc.pages:
-        pb = getattr(page, "_page_box", None)
-        if pb is None:
-            pb = getattr(page, "page_box", None)
-        if pb is not None:
-            visit_box(pb)
-
-    if max_bottom_px > 0:
-        height_mm = math.ceil(max_bottom_px / 3.7795) + 2
-        log.info("[WeasyPrint] Content height: %dpx -> %dmm", max_bottom_px, height_mm)
-        return height_mm
-
-    log.warning("[WeasyPrint] Box tree traversal returned 0, using A4 fallback")
-    try:
-        a4_html = _inject_css(html, "@page { size: 210mm 297mm; margin: 0; }")
-        a4_doc = HTML(string=a4_html).render()
-        num_pages = len(a4_doc.pages)
-        height_mm = num_pages * 297
-        return height_mm
-    except Exception:
-        return 297
-
-
-def _convert_with_weasyprint(html: str, filename: str) -> bytes:
-    """Convert HTML to PDF using WeasyPrint with two-pass rendering.
-
-    For default (single-page) view:
-      Pass 1: Render with tall page, measure content height via box tree.
-      Pass 2: Re-render with @page { size: 210mm <measured>mm }.
-    For paginated view: Render directly with A4.
-    """
-    if not WEASYPRINT_AVAILABLE:
-        raise RuntimeError("WeasyPrint not installed")
-
-    log.info("[WeasyPrint] Generating PDF: %s", filename)
-
-    # Remove scripts (WeasyPrint ignores JS)
-    html_clean = _remove_scripts(html)
-
-    # Inject font + visual overrides
-    html_styled = _inject_css(html_clean, _PDF_OVERRIDE_CSS)
-
-    is_paginated = _is_paginated_view(html_styled)
-
-    if is_paginated:
-        log.info("[WeasyPrint] Paginated view: A4")
-        pdf_bytes = HTML(string=html_styled).write_pdf()
-    else:
-        height_mm = _measure_content_height_mm(html_styled)
-        log.info("[WeasyPrint] Default view: single page, height=%dmm", height_mm)
-        final_html = _inject_css(
-            html_styled,
-            f"@page {{ size: 210mm {height_mm}mm; margin: 0; }}",
-        )
-        pdf_bytes = HTML(string=final_html).write_pdf()
-
-    if not pdf_bytes or len(pdf_bytes) == 0:
-        raise RuntimeError("WeasyPrint produced empty PDF")
-
-    log.info("[WeasyPrint] PDF generated: %d bytes", len(pdf_bytes))
-    return pdf_bytes
-
-
-# ============================================
-# Main conversion function (dual-engine)
+# Main conversion function
 # ============================================
 def convert_html_to_pdf(html: str, filename: str) -> bytes:
-    """Convert HTML to PDF.
+    """Convert HTML to PDF using Edge (Blink engine).
 
-    Primary engine: Edge (Blink) — produces PDF matching browser preview.
-    Fallback engine: WeasyPrint — pure Python, lower memory, slightly different.
-
-    For Edge: HTML is passed with font override CSS injected. Edge executes
-    the frontend's embedded JS to re-measure content height and set @page size.
-    For WeasyPrint: Scripts removed, two-pass rendering measures height via
-    box tree traversal.
+    Edge produces PDFs matching the browser preview exactly because it uses
+    the same rendering engine. The frontend's embedded JS re-measures content
+    height and sets @page size, which Edge executes correctly.
     """
-    # Inject font override CSS for both engines (makes Docker fonts match
-    # Arial metrics, producing layout closer to browser preview)
+    # Inject font override CSS (makes Docker fonts match Arial metrics,
+    # producing layout closer to browser preview)
     html_styled = _inject_css(html, _PDF_OVERRIDE_CSS)
 
-    # Try Edge first
-    if EDGE_PATH:
-        try:
-            return _convert_with_edge(html_styled, filename)
-        except Exception as e:
-            log.warning("[Edge] Failed: %s, falling back to WeasyPrint", e)
-
-    # Fallback to WeasyPrint
-    if WEASYPRINT_AVAILABLE:
-        return _convert_with_weasyprint(html_styled, filename)
-
-    raise RuntimeError("No PDF engine available (Edge not found, WeasyPrint not installed)")
+    return _convert_with_edge(html_styled, filename)
 
 
 # ============================================
@@ -435,21 +286,19 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
 # ============================================
 @app.get("/api/health", response_model=HealthResponse)
 def health_check():
-    """Health check - report available PDF engines."""
+    """Health check - report Edge availability."""
     edge_ver = get_edge_version() if EDGE_PATH else None
     return HealthResponse(
-        status="ok" if (EDGE_PATH or WEASYPRINT_AVAILABLE) else "degraded",
-        engine="edge" if EDGE_PATH else ("weasyprint" if WEASYPRINT_AVAILABLE else "none"),
+        status="ok" if EDGE_PATH else "degraded",
+        engine="edge" if EDGE_PATH else "none",
         edge_available=bool(EDGE_PATH),
         edge_version=edge_ver,
-        weasyprint_available=WEASYPRINT_AVAILABLE,
-        weasyprint_version=WEASYPRINT_VERSION,
     )
 
 
 @app.get("/api/test-pdf")
 def test_pdf():
-    """Test PDF generation with the primary engine."""
+    """Test PDF generation with Edge."""
     test_html = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
         '<style>@page { size: A4; margin: 2cm; }'
@@ -461,30 +310,16 @@ def test_pdf():
     )
 
     try:
-        # Try Edge first
         if EDGE_PATH:
-            try:
-                pdf_bytes = _convert_with_edge(test_html, "test")
-                return {
-                    "status": "ok",
-                    "engine": "edge",
-                    "edge_version": get_edge_version(),
-                    "pdf_size": len(pdf_bytes),
-                }
-            except Exception as e:
-                log.warning("[test-pdf] Edge failed: %s, trying WeasyPrint", e)
-
-        # Fallback
-        if WEASYPRINT_AVAILABLE:
-            pdf_bytes = HTML(string=test_html).write_pdf()
+            pdf_bytes = _convert_with_edge(test_html, "test")
             return {
                 "status": "ok",
-                "engine": "weasyprint",
-                "version": WEASYPRINT_VERSION,
+                "engine": "edge",
+                "edge_version": get_edge_version(),
                 "pdf_size": len(pdf_bytes),
             }
 
-        return {"status": "failed", "error": "No PDF engine available"}
+        return {"status": "failed", "error": "Edge not available"}
     except Exception as e:
         log.error("[test-pdf] Exception: %s", str(e), exc_info=True)
         return {"status": "error", "message": str(e)}
@@ -506,10 +341,10 @@ async def export_pdf(request: PdfExportRequest):
     if not html or not html.strip():
         raise HTTPException(status_code=400, detail="HTML content cannot be empty")
 
-    if not EDGE_PATH and not WEASYPRINT_AVAILABLE:
+    if not EDGE_PATH:
         raise HTTPException(
             status_code=503,
-            detail="PDF export service not ready (no engine available)",
+            detail="PDF export service not ready (Edge not available)",
         )
 
     try:
@@ -551,13 +386,9 @@ if __name__ == "__main__":
     print(f"  CORS:     {_allowed_origins}")
     print()
     if EDGE_PATH:
-        print(f"  Primary:  Edge ({get_edge_version() or 'version unknown'})")
+        print(f"  Engine:   Edge ({get_edge_version() or 'version unknown'})")
     else:
-        print("  Primary:  Edge (NOT FOUND)")
-    if WEASYPRINT_AVAILABLE:
-        print(f"  Fallback: WeasyPrint v{WEASYPRINT_VERSION}")
-    else:
-        print("  Fallback: WeasyPrint (not installed)")
+        print("  Engine:   Edge (NOT FOUND)")
     print()
     print("  Press Ctrl+C to stop")
     print()

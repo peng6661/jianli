@@ -1,22 +1,17 @@
 # ============================================
 # Resume Editor - Cloud Deployment Dockerfile
-# PDF Engine: Edge (primary, Blink = same as browser) + WeasyPrint (fallback)
+# PDF Engine: Edge (Blink = same as browser preview)
 # Swap file created at runtime to handle Edge memory needs
 # ============================================
 
 FROM python:3.12-slim
 
 # Install system dependencies:
-# - WeasyPrint: libpango, libcairo, libgdk-pixbuf (fallback engine)
-# - Edge: microsoft-edge-stable (primary engine, same Blink as browser)
+# - Edge: microsoft-edge-stable (Blink engine, same as browser)
 # - dbus: Edge needs D-Bus on Linux
 # - Fonts: wqy-zenhei (CJK ~10MB), liberation2 (Latin, Arial-compatible)
 # - nginx: static file serving
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpango-1.0-0 \
-    libpangoft2-1.0-0 \
-    libcairo2 \
-    libgdk-pixbuf-2.0-0 \
     fonts-wqy-zenhei \
     fonts-liberation2 \
     dbus \

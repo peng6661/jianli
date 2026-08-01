@@ -1,6 +1,6 @@
 # ============================================
 # Resume Editor - Docker Compose
-# Single container: Nginx (static) + FastAPI (PDF via Edge/WeasyPrint)
+# Single container: Nginx (static) + FastAPI (PDF via Edge)
 # privileged: needed for swapon (creates 2GB swap at startup)
 # shm_size: Edge needs large /dev/shm for rendering
 # ============================================

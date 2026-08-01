@@ -4492,7 +4492,6 @@
             } else {
                 // 默认视图：前端给初始 @page 高度值
                 // Edge 会执行嵌入 JS 重新测量精确高度（Blink 引擎，和浏览器一致）
-                // WeasyPrint 会通过后端两遍渲染测量高度（box tree 遍历）
                 var measuredH = Math.ceil(paper.getBoundingClientRect().height) + 30;
                 var measuredMm = Math.ceil(measuredH / 3.779);
                 pageSizeRule = '@page { size: 210mm ' + measuredMm + 'mm; margin: 0; }';
