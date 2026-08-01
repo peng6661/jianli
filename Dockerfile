@@ -1,50 +1,26 @@
 # ============================================
 # Resume Editor - Cloud Deployment Dockerfile
-# Microsoft Edge headless + Xvfb + FastAPI backend
+# WeasyPrint (pure Python PDF) + FastAPI backend
+# No browser needed — ~50MB memory vs 300-500MB for Edge/Chromium
 # ============================================
 
 FROM python:3.12-slim
 
-# Install Microsoft Edge + system dependencies
+# Install system dependencies for WeasyPrint + nginx
+# WeasyPrint needs: libpango, libcairo, libgdk-pixbuf (C libraries)
+# Fonts: wqy-zenhei for CJK, liberation2 for Latin
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Tools needed to add Microsoft's apt repo
-    curl \
-    gnupg \
-    apt-transport-https \
-    # Lightweight CJK font (~10MB single file, covers GB2312/GBK).
-    # DO NOT use fonts-noto-cjk / fonts-noto-cjk-extra!
-    # Edge loads ALL installed fonts into memory on startup.
-    # Noto CJK + extra = 280+MB of .ttc files, takes 70+ seconds
-    # to load in Docker overlay2 fs, causing Edge to timeout.
-    # wqy-zenhei loads in ~2 seconds.
+    # WeasyPrint runtime dependencies
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf2.0-0 \
+    # CJK font (~10MB, covers GB2312/GBK)
     fonts-wqy-zenhei \
-    # Latin fonts (Arial/Helvetica metric-compatible equivalents)
+    # Latin fonts (Arial/Helvetica metric-compatible)
     fonts-liberation2 \
     # nginx for static file serving
     nginx \
-    # dbus daemon - Edge/Chromium needs D-Bus in containers,
-    # without it Edge hangs waiting for /run/dbus/system_bus_socket
-    dbus \
-    # Xvfb: virtual framebuffer display.
-    # Provides DISPLAY=:99 which helps Edge headless mode initialize
-    # properly in Docker containers (some headless rendering paths reference display).
-    xvfb \
-    && rm -rf /var/lib/apt/lists/*
-
-# Explicitly tell D-Bus clients (Edge) where the system bus socket is.
-# Without this, Edge gets "Could not parse server address: Unknown address type"
-# because the container has no desktop session to provide the address.
-ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
-ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
-# Virtual display for Edge (Xvfb started in docker-entrypoint.sh).
-# Xvfb provides DISPLAY=:99 which helps Edge headless initialize in Docker.
-ENV DISPLAY=:99
-
-# Add Microsoft Edge apt repository and install
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-edge.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends microsoft-edge-stable \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -3,47 +3,9 @@ set -e
 
 echo "========================================"
 echo "  Resume Editor - Cloud Deployment"
-echo "  PDF Engine: Microsoft Edge headless + Xvfb"
+echo "  PDF Engine: WeasyPrint (pure Python)"
 echo "========================================"
 echo ""
-
-# Start Xvfb (virtual framebuffer display)
-# Xvfb provides DISPLAY=:99 which helps Edge headless mode initialize
-# properly in Docker containers (some headless rendering paths reference display).
-if command -v Xvfb &>/dev/null; then
-    Xvfb :99 -screen 0 1280x1024x24 -ac +extension RANDR +render -noreset &
-    XVFB_PID=$!
-    sleep 1  # Give Xvfb time to initialize
-    if kill -0 $XVFB_PID 2>/dev/null; then
-        echo "  Xvfb virtual display ready on :99"
-    else
-        echo "  WARNING: Xvfb failed to start! Edge may not work."
-    fi
-else
-    echo "  WARNING: Xvfb not found, Edge headless may not initialize properly."
-fi
-
-# Start D-Bus system daemon (Edge/Chromium requires it)
-# Without dbus-daemon, Edge hangs indefinitely on D-Bus connect attempts
-mkdir -p /run/dbus
-rm -f /run/dbus/system_bus_socket  # Remove stale socket from previous run
-if command -v dbus-daemon &>/dev/null; then
-    dbus-daemon --system --fork 2>&1 || echo "  WARNING: dbus-daemon failed to start"
-    # Wait for socket to appear
-    for i in $(seq 1 5); do
-        if [ -S /run/dbus/system_bus_socket ]; then
-            echo "  D-Bus system bus ready at /run/dbus/system_bus_socket"
-            break
-        fi
-        sleep 0.5
-    done
-    # Verify
-    if [ ! -S /run/dbus/system_bus_socket ]; then
-        echo "  WARNING: D-Bus socket not created! Edge may hang."
-    fi
-else
-    echo "  WARNING: dbus-daemon not found, Edge may hang on D-Bus"
-fi
 
 # Start FastAPI backend in background
 echo "[1/2] Starting FastAPI PDF service (port 8080)..."
@@ -70,11 +32,12 @@ echo ""
 echo "  Site:     http://localhost"
 echo "  API:      http://localhost/api/health"
 echo "  Export:   POST http://localhost/api/export-pdf"
+echo "  Test:     GET http://localhost/api/test-pdf"
 echo ""
 echo "  Press Ctrl+C to stop."
 echo ""
 
 # Graceful shutdown on signal
-trap "echo ''; echo 'Shutting down...'; kill $BACKEND_PID $XVFB_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
+trap "echo ''; echo 'Shutting down...'; kill $BACKEND_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
 
 nginx -g 'daemon off;'

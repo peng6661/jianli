@@ -1,6 +1,7 @@
 # ============================================
 # Resume Editor - Docker Compose
-# Single container: Nginx (static) + FastAPI (PDF)
+# Single container: Nginx (static) + FastAPI (PDF via WeasyPrint)
+# No browser needed — no shm_size, no seccomp, no special security
 # ============================================
 
 services:
@@ -8,11 +9,7 @@ services:
     build: .
     container_name: resume-editor
     restart: unless-stopped
-    # Edge/Chrome needs these to run in Docker containers:
-    init: true                    # Use tini as PID 1 (proper zombie reaping + signal forwarding)
-    shm_size: "2gb"               # Chrome needs >64MB shared memory for rendering
-    security_opt:
-      - seccomp:unconfined       # Docker's default seccomp profile blocks syscalls Edge needs
+    init: true                    # Use tini as PID 1 (proper zombie reaping)
     ports:
       - "8080:80"
     environment:
@@ -28,7 +25,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 10s
     logging:
       driver: json-file
       options:
