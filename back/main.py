@@ -206,6 +206,9 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
             "--no-default-browser-check",
             "--password-store=basic",
             "--disable-crash-reporter",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--user-data-dir=/tmp/edge-pdf-profile",
             "--virtual-time-budget=10000",
             "--print-to-pdf-no-header",
             f"--print-to-pdf={temp_pdf}",
@@ -230,6 +233,11 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
         try:
             stdout_data, _ = process.communicate(timeout=60)
         except subprocess.TimeoutExpired:
+            # Capture partial output before killing
+            try:
+                stdout_data = process.stdout.read() if process.stdout else b""
+            except Exception:
+                stdout_data = b""
             process.kill()
             process.wait()
             # Check if PDF was created before timeout (Edge sometimes
@@ -237,7 +245,9 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
             if Path(temp_pdf).exists() and Path(temp_pdf).stat().st_size > 0:
                 log.warning("[Edge] Process timed out but PDF was created")
             else:
-                raise RuntimeError("Edge timed out (60s), no PDF generated")
+                partial = stdout_data[:2000].decode("utf-8", errors="replace") if stdout_data else "(no output)"
+                log.error("[Edge] Timeout. Partial output:\n%s", partial)
+                raise RuntimeError(f"Edge timed out (60s), no PDF generated. Output: {partial[:500]}")
 
         exit_code = process.returncode
 
@@ -323,6 +333,109 @@ def test_pdf():
     except Exception as e:
         log.error("[test-pdf] Exception: %s", str(e), exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/diag-edge")
+def diag_edge():
+    """Diagnose Edge issues — runs Edge with verbose logging."""
+    if not EDGE_PATH:
+        return {"status": "error", "message": "Edge not found"}
+
+    import tempfile, json
+
+    # 1. Check memory
+    meminfo = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    if key in ("MemTotal", "MemAvailable", "MemFree", "SwapTotal", "SwapFree", "Shmem"):
+                        meminfo[key] = val
+    except Exception:
+        pass
+
+    # 2. Check /dev/shm size
+    shm_size = ""
+    try:
+        result = subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=5)
+        shm_size = result.stdout.strip()
+    except Exception:
+        pass
+
+    # 3. Try running Edge with verbose logging
+    temp_html = None
+    temp_pdf = None
+    edge_output = ""
+    exit_code = None
+
+    try:
+        # Simple test HTML
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as f:
+            f.write('<!DOCTYPE html><html><body><h1>Test</h1></body></html>')
+            temp_html = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            temp_pdf = f.name
+        Path(temp_pdf).unlink(missing_ok=True)
+
+        cmd = [
+            EDGE_PATH,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-crash-reporter",
+            "--enable-logging=stderr",
+            "--v=1",
+            "--virtual-time-budget=5000",
+            "--print-to-pdf-no-header",
+            f"--print-to-pdf={temp_pdf}",
+            Path(temp_html).absolute().as_uri(),
+        ]
+
+        env = os.environ.copy()
+        env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+                env=env, stdin=subprocess.DEVNULL,
+            )
+            edge_output = (result.stdout + "\n" + result.stderr)[-3000:]
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired:
+            edge_output = "TIMEOUT after 30s"
+
+        pdf_exists = Path(temp_pdf).exists() if temp_pdf else False
+        pdf_size = Path(temp_pdf).stat().st_size if pdf_exists else 0
+
+        return {
+            "status": "ok" if pdf_size > 0 else "failed",
+            "memory": meminfo,
+            "shm": shm_size,
+            "edge_cmd": " ".join(cmd),
+            "exit_code": exit_code,
+            "pdf_created": pdf_exists,
+            "pdf_size": pdf_size,
+            "edge_output": edge_output[-2000:],
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "edge_output": edge_output}
+    finally:
+        for p in [temp_html, temp_pdf]:
+            if p and Path(p).exists():
+                try:
+                    Path(p).unlink()
+                except Exception:
+                    pass
 
 
 # Backward compatibility alias
