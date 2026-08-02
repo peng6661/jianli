@@ -233,13 +233,14 @@ class EdgeCDPClient:
             "--disable-dev-shm-usage",
             "--disable-extensions",
             "--disable-sync",
+            "--hide-scrollbars",
             "--no-first-run",
             "--no-default-browser-check",
+            "--password-store=basic",
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
             "--disable-features=TranslateUI,BackForwardCache",
-            "--enable-features=NetworkServiceInProcess",
             f"--user-data-dir={user_data_dir}",
             f"--remote-debugging-port={self.debug_port}",
             "about:blank",  # Keep a blank page open
@@ -252,7 +253,7 @@ class EdgeCDPClient:
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             env=env,
             start_new_session=True,
@@ -276,8 +277,19 @@ class EdgeCDPClient:
                 last_error = e
                 time.sleep(0.25)
             if self.process.poll() is not None:
+                # Edge crashed — capture stderr for diagnosis
+                stderr_tail = ""
+                try:
+                    stderr_data = self.process.stderr.read()
+                    if stderr_data:
+                        stderr_tail = stderr_data.decode(
+                            "utf-8", errors="replace"
+                        )[-2000:]
+                except Exception:
+                    pass
                 raise RuntimeError(
-                    f"Edge exited prematurely (code={self.process.returncode})"
+                    f"Edge exited prematurely (code={self.process.returncode}). "
+                    f"stderr: {stderr_tail[:1000]}"
                 )
 
         raise RuntimeError(
