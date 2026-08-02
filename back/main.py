@@ -101,6 +101,36 @@ app = FastAPI(
     version="7.1.0",
 )
 
+
+@app.on_event("startup")
+def startup_event():
+    """Pre-launch persistent Edge browser (CDP mode) on app startup.
+
+    Uses FastAPI startup event (not __main__ guard) because the app is
+    imported as a module by uvicorn (uvicorn back.main:app), so
+    __name__ == "back.main", not "__main__".
+    """
+    global _edge_cdp
+    if EDGE_PATH:
+        try:
+            _edge_cdp = EdgeCDPClient(EDGE_PATH, debug_port=9222)
+            _edge_cdp.start()
+            log.info("Edge CDP browser pre-launched — PDF requests will be fast!")
+        except Exception as e:
+            log.warning("CDP pre-launch failed, will use subprocess fallback: %s", e)
+            _edge_cdp = None
+    else:
+        _edge_cdp = None
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Clean up CDP browser on app shutdown."""
+    global _edge_cdp
+    if _edge_cdp:
+        log.info("Shutting down Edge CDP browser...")
+        _edge_cdp.close()
+
 # ============================================
 # Concurrency control
 # ============================================
@@ -919,17 +949,8 @@ if __name__ == "__main__":
     # One-time cleanup of leftover temp files from previous container runs
     cleanup_edge_temp_files()
 
-    # Pre-launch persistent Edge browser (CDP mode)
-    if EDGE_PATH:
-        try:
-            _edge_cdp = EdgeCDPClient(EDGE_PATH, debug_port=9222)
-            _edge_cdp.start()
-            log.info("Edge CDP browser pre-launched — PDF requests will be fast!")
-        except Exception as e:
-            log.warning("CDP pre-launch failed, will use subprocess fallback: %s", e)
-            _edge_cdp = None
-    else:
-        _edge_cdp = None
+    # CDP initialization is handled by FastAPI's "startup" event
+    # (which also fires when imported via uvicorn back.main:app).
 
     print("=" * 50)
     print("  Resume Editor PDF Service (Cloud Edition)")
@@ -940,7 +961,8 @@ if __name__ == "__main__":
     print(f"  Export:    POST http://{host}:{port}/api/export-pdf")
     print(f"  Test:      GET http://{host}:{port}/api/test-pdf")
     print(f"  CORS:      {_allowed_origins}")
-    print(f"  Engine:    {'CDP (persistent)' if (_edge_cdp and _edge_cdp._ready) else 'Subprocess (one-shot)'}")
+    engine_info = "CDP (persistent)" if (_edge_cdp and _edge_cdp._ready) else "Subprocess (one-shot)"
+    print(f"  Engine:    {engine_info}")
     print(f"  Concurrency: max {MAX_CONCURRENT_PDFS} parallel requests")
     print()
     if EDGE_PATH:
@@ -951,9 +973,4 @@ if __name__ == "__main__":
     print("  Press Ctrl+C to stop")
     print()
 
-    try:
-        uvicorn.run(app, host=host, port=port, log_level="info")
-    finally:
-        if _edge_cdp:
-            log.info("Shutting down Edge CDP browser...")
-            _edge_cdp.close()
+    uvicorn.run(app, host=host, port=port, log_level="info")
