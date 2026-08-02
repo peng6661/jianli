@@ -939,10 +939,90 @@
         .cfg-switch input:checked + .cfg-slider2::before { transform:translateX(16px); }
 
         @media (max-width:768px) {
-            .preview-panel { display:none; }
-            .editor-main.show-preview .editor-panel { display:none; }
-            .editor-main.show-preview .preview-panel { display:flex; }
-            .grid-2 { grid-template-columns:1fr; }
+            /* === 移动端底部导航栏 === */
+            .mobile-tab-bar {
+                display: flex;
+                position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+                background: #fff; border-top: 1px solid var(--ant-border);
+                padding: 4px 0 env(safe-area-inset-bottom, 8px);
+                justify-content: center; gap: 0;
+                box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+            }
+            .mobile-tab {
+                display: flex; flex-direction: column; align-items: center; gap: 2px;
+                padding: 6px 28px; border: none; background: transparent;
+                font-size: 11px; font-family: inherit; color: var(--ant-text-tertiary);
+                cursor: pointer; transition: color 0.2s; -webkit-tap-highlight-color: transparent;
+            }
+            .mobile-tab svg { width: 20px; height: 20px; }
+            .mobile-tab.active { color: var(--ant-primary); font-weight: 600; }
+            /* 底部栏占位：防止内容被遮挡 */
+            .editor-page { padding-bottom: 60px; }
+
+            /* === 面板切换 === */
+            .editor-panel, .preview-panel { width: 100% !important; padding: 0 !important; }
+            .preview-panel { display: none; }
+            .editor-main.show-preview .editor-panel { display: none; }
+            .editor-main.show-preview .preview-panel { display: flex; }
+
+            /* === 主布局收紧 === */
+            .editor-main { padding: 8px; gap: 0; }
+
+            /* === 顶栏精简 === */
+            .editor-header {
+                padding: 0 8px; height: 52px;
+            }
+            .editor-header .nav-logo span { display: none; }
+            .editor-header .nav-logo img { width: 24px; height: 24px; }
+            .editor-title-input { max-width: 120px; font-size: 14px; }
+            /* 隐藏次要按钮 */
+            .editor-header-right .ant-btn-default { display: none; }
+            .editor-header-right .ant-btn-primary { font-size: 12px; padding: 4px 10px; }
+            /* 显示返回按钮图标 */
+            .back-btn { padding: 4px 6px; }
+            .header-divider { display: none; }
+
+            /* === 编辑器卡片头部精简 === */
+            .card-head { padding: 0 12px; min-height: 44px; flex-wrap: wrap; gap: 4px; }
+            .card-head-title { font-size: 14px; }
+            /* 自定义模块/配置按钮缩成图标 */
+            .card-head-extra .ant-btn-text span span { display: none; }
+            .card-head-extra .ant-btn-text { padding: 4px 6px; }
+
+            /* === Tab 栏优化（横向滚动 + 紧凑） === */
+            .tabs { padding: 0 8px; gap: 0; }
+            .tab { padding: 8px 10px; font-size: 12px; }
+
+            /* === 表单区域 === */
+            .tab-content { padding: 16px 12px; }
+
+            /* === Grid === */
+            .grid-2 { grid-template-columns: 1fr; }
+
+            /* === 预览纸张缩放适配 === */
+            .resume-paper {
+                width: 100% !important;
+                min-height: auto !important;
+                padding: 20px 16px !important;
+            }
+            .paginated-page {
+                width: 100% !important;
+                padding: 20px 16px !important;
+            }
+            /* 预览容器允许滚动 */
+            .preview-panel .card-body { overflow: auto; -webkit-overflow-scrolling: touch; }
+
+            /* === 弹窗/Drawer 全屏 === */
+            .drawer { width: 100% !important; min-width: 100% !important; }
+            .modal-overlay .modal-card, .km-dialog { max-width: 90vw; }
+
+            /* === Toast 位置调整 === */
+            .toast { top: 60px; }
+        }
+
+        /* === 桌面端隐藏底部栏 === */
+        @media (min-width:769px) {
+            .mobile-tab-bar { display: none !important; }
         }
 
         /* ====== Markdown 工具栏样式（精确匹配生产环境 @uiw/react-md-editor 源码） ====== */
@@ -1611,6 +1691,33 @@
             </div>
         </div>
     </div>
+
+    <!-- 移动端底部导航栏（仅 ≤768px 显示） -->
+    <nav class="mobile-tab-bar" id="mobileTabBar">
+        <button class="mobile-tab active" onclick="switchMobilePanel('editor')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+            <span>编辑</span>
+        </button>
+        <button class="mobile-tab" onclick="switchMobilePanel('preview')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <span>预览</span>
+        </button>
+        <button class="mobile-tab" onclick="exportPDF()" style="color:#1677ff;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span>导出</span>
+        </button>
+    </nav>
 
     <!-- Config Drawer - Tab Layout -->
     <div class="drawer-overlay" id="drawerOverlay"></div>
@@ -5313,9 +5420,25 @@
             pw.document.write(fullHtml);
             pw.document.close();
         }
+        /** 移动端面板切换（底部 Tab 栏调用） */
+        function switchMobilePanel(panel) {
+            var main = document.getElementById('editorMain');
+            var tabs = document.querySelectorAll('#mobileTabBar .mobile-tab');
+            if (panel === 'preview') {
+                main.classList.add('show-preview');
+                if (tabs[0]) tabs[0].classList.remove('active');
+                if (tabs[1]) tabs[1].classList.add('active');
+            } else {
+                main.classList.remove('show-preview');
+                if (tabs[0]) tabs[0].classList.add('active');
+                if (tabs[1]) tabs[1].classList.remove('active');
+            }
+        }
+        /** 兼容旧接口：toggle 编辑/预览 */
         function toggleMobileView() {
             var main = document.getElementById('editorMain');
-            main.classList.toggle('show-preview');
+            var isPreview = main.classList.contains('show-preview');
+            switchMobilePanel(isPreview ? 'editor' : 'preview');
         }
         function goBack() { saveToLocal(); window.location.href = 'index.html'; }
         function showToast(msg, type) {
@@ -6327,6 +6450,7 @@ return '<div class="module-item" data-idx="' + idx + '" data-id="' + o.mod.id + 
         try { window.exportPDF = exportPDF; } catch(e){}
         try { window.fallbackPrintExport = fallbackPrintExport; } catch(e){}
         try { window.toggleMobileView = toggleMobileView; } catch(e){}
+        try { window.switchMobilePanel = switchMobilePanel; } catch(e){}
         try { window.openModuleModal = openModuleModal; } catch(e){}
         try { window.closeModuleModal = closeModuleModal; } catch(e){}
         try { window.confirmAddModule = confirmAddModule; } catch(e){}
