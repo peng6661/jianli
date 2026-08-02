@@ -561,16 +561,15 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
         # Build command — same simple flags as local Windows version
         # --headless=new: required for --print-to-pdf
         # --virtual-time-budget: fast-forwards time so images load
-        # --single-process: avoids spawning separate renderer/GPU/utility
-        #   processes → faster startup + lower memory (~60MB vs ~150MB).
-        #   Trade-off: renderer crash kills the whole browser, but for
-        #   one-shot PDF generation this is fine (we check PDF output).
+        # --disable-dev-shm-usage: use /tmp instead of /dev/shm (safer in Docker)
+        # No --single-process — it's unstable with headless mode and can
+        #   cause crashes. Multi-process mode is more reliable.
         cmd = [
             EDGE_PATH,
             "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
-            "--single-process",
+            "--disable-dev-shm-usage",
             "--disable-extensions",
             "--disable-sync",
             "--hide-scrollbars",
