@@ -4579,11 +4579,14 @@
         function exportPDF() {
             if (_exporting) return;  // 防重复点击
 
+            console.time('[PDF导出] 总耗时');
+
             saveToLocal();
             setExportButtonsDisabled(true);
             // 持久 toast — 直到下载完成才消失
             showToast('正在生成 PDF，请稍候...', 'info', 0);
 
+            console.time('[PDF导出] 前端构建');
             // 1. 获取简历预览区域的完整 HTML（含所有样式）
             var paper = document.getElementById('resumePaper');
             var title = document.getElementById('resumeTitle').value || '我的简历';
@@ -4655,11 +4658,12 @@
                 + bodyHtml
                 + '</body></html>';
 
+            console.timeEnd('[PDF导出] 前端构建');
+            console.log('[PDF导出] HTML长度:', fullHtml.length, 'bytes');
+
             // 4. 通过 API 调用 Python 后端生成 PDF
             var apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '';
-
-            console.log('[PDF导出] 请求URL:', apiBase + '/api/export-pdf');
-            console.log('[PDF导出] HTML长度:', fullHtml.length);
+            console.time('[PDF导出] 服务端+下载');
 
             // 发送请求
             fetch(apiBase + '/api/export-pdf', {
@@ -4685,6 +4689,8 @@
                 return resp.blob();
             })
             .then(function(blob) {
+                console.timeEnd('[PDF导出] 服务端+下载');
+                console.timeEnd('[PDF导出] 总耗时');
                 dismissToast();
                 setExportButtonsDisabled(false);
                 console.log('[PDF导出] 成功, 大小:', blob.size, 'bytes');
@@ -4699,6 +4705,8 @@
                 showToast('PDF 已导出', 'success');
             })
             .catch(function(err) {
+                console.timeEnd('[PDF导出] 服务端+下载');
+                console.timeEnd('[PDF导出] 总耗时');
                 dismissToast();
                 setExportButtonsDisabled(false);
                 console.error('[PDF导出] 失败:', err.message);
@@ -4708,16 +4716,17 @@
             });
         }
 
-        /** 构建 PDF 导出专用 CSS — 只保留简历内容样式，去掉编辑器 UI 样式 */
+        /** 构建 PDF 导出专用 CSS — 静态简历样式 + 动态配置 + 导出覆盖 */
         function buildExportCSS(pageSizeRule, viewMode) {
             var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
 
-            // 1. 复制 #cfg-dynamic-style（用户配置的动态样式：字号/颜色/间距）
+            // 1. 动态配置 CSS（用户配置的字号/颜色/间距，来自 #cfg-dynamic-style）
             var dynStyle = document.getElementById('cfg-dynamic-style');
             var dynamicCSS = dynStyle ? dynStyle.innerHTML : '';
 
-            // 2. 从主 style 中提取简历内容相关 CSS（只保留 .rp-* .resume-paper .paginated-page 等）
-            var resumeCSS = extractResumeCSS();
+            // 2. 静态简历样式（预编译常量，无需运行时 CSSOM 遍历）
+            //    包含 :root 变量 / .rp-* / .resume-paper / .paginated-page / 基础元素
+            var resumeCSS = RESUME_STATIC_CSS;
 
             // 3. 导出覆盖 CSS（@page / 黑体 / 分页裁剪）
             var overrideCSS = [
@@ -4734,82 +4743,46 @@
             return dynamicCSS + '\n' + resumeCSS + '\n' + overrideCSS;
         }
 
-        /** 从页面样式表中提取简历内容相关 CSS（.rp-*, .resume-paper, .paginated-page） */
-        function extractResumeCSS() {
-            // 简历内容相关的选择器前缀
-            var RESUME_PATTERNS = [
-                '.rp-', '.resume-paper', '.paginated-page', '.resume-image', '.resume-inline',
-                ':root', // CSS 变量
-            ];
-            // 简历内容内可能出现的 HTML 元素基础样式
-            var RESUME_TAGS = ['p', 'ul', 'ol', 'li', 'a', 'strong', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                'table', 'th', 'td', 'tr', 'blockquote', 'code', 'pre', 'hr', 'img'];
-
-            var css = '';
-            try {
-                var sheets = document.styleSheets;
-                for (var i = 0; i < sheets.length; i++) {
-                    var sheet = sheets[i];
-                    try {
-                        var rules = sheet.cssRules || sheet.rules;
-                        if (!rules) continue;
-                        for (var j = 0; j < rules.length; j++) {
-                            var rule = rules[j];
-                            if (rule.type === CSSRule.STYLE_RULE) {
-                                var sel = rule.selectorText || '';
-                                // 检查是否匹配简历内容相关选择器
-                                var keep = false;
-                                for (var k = 0; k < RESUME_PATTERNS.length; k++) {
-                                    if (sel.indexOf(RESUME_PATTERNS[k]) !== -1) { keep = true; break; }
-                                }
-                                // 也保留简历标签的基础样式（如 p, ul, li 等在选择器中）
-                                if (!keep && rule.style && rule.style.length > 0) {
-                                    for (var t = 0; t < RESUME_TAGS.length; t++) {
-                                        // 简单匹配：选择器以标签名开头或包含标签名
-                                        var tag = RESUME_TAGS[t];
-                                        if (sel === tag || sel.indexOf(tag + ',') === 0 || sel.indexOf(tag + ' ') === 0 ||
-                                            sel.indexOf(' ' + tag) !== -1 || sel.indexOf(',' + tag) !== -1 ||
-                                            sel.indexOf('.' + tag) !== -1 || sel.indexOf('#' + tag) !== -1) {
-                                            // 但要排除编辑器 UI 选择器
-                                            if (sel.indexOf('.ant-') === -1 && sel.indexOf('.editor-') === -1 &&
-                                                sel.indexOf('.tab') === -1 && sel.indexOf('.card') === -1 &&
-                                                sel.indexOf('.form-') === -1 && sel.indexOf('.btn') === -1 &&
-                                                sel.indexOf('.nav') === -1 && sel.indexOf('.header') === -1 &&
-                                                sel.indexOf('.drawer') === -1 && sel.indexOf('.modal') === -1 &&
-                                                sel.indexOf('.toast') === -1 && sel.indexOf('.toggle') === -1 &&
-                                                sel.indexOf('.slider') === -1 && sel.indexOf('.dropdown') === -1 &&
-                                                sel.indexOf('.tooltip') === -1 && sel.indexOf('.badge') === -1) {
-                                                keep = true; break;
-                                            }
-                                        }
-                                    }
-                                }
-                                if (keep) {
-                                    css += rule.cssText + '\n';
-                                }
-                            } else if (rule.type === CSSRule.MEDIA_RULE && rule.conditionText &&
-                                rule.conditionText.indexOf('print') !== -1) {
-                                // 保留 @media print 规则
-                                css += rule.cssText + '\n';
-                            }
-                        }
-                    } catch(e) {
-                        // 跨域样式表无法访问，跳过
-                    }
-                }
-            } catch(e) {
-                // CSSOM 读取失败时降级：复制所有 style 元素内容
-                var allStyles = document.querySelectorAll('style');
-                for (var s = 0; s < allStyles.length; s++) {
-                    css += allStyles[s].innerHTML + '\n';
-                }
-            }
-            // 确保基础重置样式存在
-            if (css.indexOf('box-sizing') === -1) {
-                css = '*,*::before,*::after{box-sizing:border-box}' + css;
-            }
-            return css;
-        }
+        // 简历内容静态 CSS（从页面 CSS 中提取的常量，避免运行时 CSSOM 遍历 ~1-2s）
+        var RESUME_STATIC_CSS = [
+            ':root{--ant-primary:#1677ff;--ant-text:rgba(0,0,0,0.88);--ant-text-secondary:rgba(0,0,0,0.65);--ant-text-tertiary:rgba(0,0,0,0.45);--rp-theme-color:#4080FF;--list-gap:4px;--rp-content-font:"Microsoft YaHei","PingFang SC","WenQuanYi Zen Hei","Noto Sans CJK SC",sans-serif}',
+            '*,*::before,*::after{box-sizing:border-box}',
+            // Paper containers
+            '.resume-paper{width:210mm;min-height:297mm;background:#fff;padding:36px 36px 36px 36px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-radius:2px;flex-shrink:0;margin:0 auto;box-sizing:border-box;overflow-wrap:anywhere;position:relative}',
+            '.paginated-page{width:210mm;min-height:297mm;background:#fff;margin:0 auto;padding:36px 36px 36px 36px;border:none;outline:1px solid #e5e7eb;outline-offset:-1px;box-shadow:0 1px 6px rgba(0,0,0,0.12);border-radius:2px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;box-sizing:border-box;flex-shrink:0}',
+            '.paginated-page .rp-section{page-break-inside:avoid;break-inside:avoid}',
+            // Resume content components
+            '.rp-name{font-size:20px;font-weight:700;color:#111;margin-bottom:1px}',
+            '.rp-info-line{font-size:13px;color:#555;margin-bottom:0;display:flex;flex-wrap:wrap;gap:4px;align-items:center}',
+            '.rp-info-line .sep{display:inline-block;width:1px;height:10px;background:#ccc;margin:0 8px}',
+            '.rp-section{margin-bottom:0}',
+            '.rp-section-title{font-size:16px;font-weight:700;color:var(--ant-primary);margin-bottom:2px;line-height:1.2}',
+            '.rp-divider{border:none;border-top-style:solid;border-top-width:2px;opacity:0.4;margin-top:0;margin-bottom:4px}',
+            '.rp-item{margin-bottom:10px}',
+            '.rp-section>.rp-item:last-child{margin-bottom:0}',
+            '.rp-item-header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:2px}',
+            '.rp-item-title{font-weight:600;color:#1a1a1a;display:flex;gap:30px;flex-wrap:wrap}',
+            '.rp-item-title.education-title{gap:6px}',
+            '.rp-item-meta{color:#888;white-space:nowrap;flex-shrink:0}',
+            '.rp-item-content{font-size:13px;color:#333;overflow-wrap:anywhere;word-break:break-word;max-width:100%}',
+            '.rp-item-content p{margin:0;padding:0;line-height:inherit}',
+            '.rp-item-content ul{margin:0;padding:0 0 0 16px;white-space:normal;list-style-position:outside}',
+            '.rp-item-content ol{margin:0;padding:0 0 0 16px;white-space:normal;list-style-position:outside}',
+            '.rp-item-content li{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}',
+            '.rp-item-content li.li-gap{margin-top:var(--list-gap,4px)}',
+            '.rp-item-content hr{display:none}',
+            '.rp-item-divider{border:none;border-top-style:dashed;border-top-width:1px;border-top-color:#e0e0e0;margin:8px 0}',
+            '.rp-skill-tag{display:inline-block;padding:2px 10px;font-size:11px;background:#f5f5f5;border-radius:4px;color:#555;margin:2px 4px 2px 0}',
+            // Links
+            '.resume-paper a,.resume-paper a:link,.resume-paper a:visited{color:inherit;text-decoration:none}',
+            '.paginated-page a,.paginated-page a:link,.paginated-page a:visited{color:inherit;text-decoration:none}',
+            // Images in resume
+            '.resume-image-layer{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:10}',
+            '.resume-image-item{position:absolute;cursor:default;border:2px solid transparent;border-radius:4px;transition:border-color .2s}',
+            '.resume-image-item img{width:100%;height:100%;object-fit:contain;border-radius:2px;pointer-events:none;display:block}',
+            // Responsive images
+            '.resume-inline-images{position:absolute;top:0;left:0;pointer-events:none}',
+        ].join('');
 
         /** 回退方案 — 在新窗口中展示简历内容（用户可自行打印或另存为 PDF） */
         function fallbackPrintExport(html, title) {
