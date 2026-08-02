@@ -341,34 +341,36 @@ class EdgeCDPClient:
     async def generate_pdf(self, html: str, filename: str) -> bytes:
         """Generate PDF using CDP Page.printToPDF.
 
-        Flow:
-        1. Connect to browser WebSocket
-        2. Create a new tab (Target.createTarget)
-        3. Navigate to data: URI (Page.navigate)
-        4. Wait for page load (Page.loadEventFired)
-        5. Call Page.printToPDF → base64-encoded PDF
-        6. Close the tab (Target.closeTarget)
+        Uses a temp HTML file + file:// URI (no base64 overhead, no size limit).
+        Polls document.readyState instead of waiting for CDP events (avoids the
+        race condition where _cdp_call consumes loadEventFired before the event
+        listener starts).
         """
+        t_start = time.monotonic()
         self.ensure_alive()
         ws_url = self._get_ws_url()
 
-        log.info("[CDP] Generating PDF: %s", filename)
+        log.info("[CDP] Generating PDF: %s (html=%d bytes)", filename, len(html))
 
+        temp_html = None
         try:
             async with websockets.connect(
                 ws_url,
-                max_size=10 * 1024 * 1024,  # 10MB (PDFs can be large)
+                max_size=10 * 1024 * 1024,
                 ping_interval=None,
                 close_timeout=5,
             ) as ws:
+                t_conn = time.monotonic()
+
                 # 1. Create a new target (tab)
                 target_id = await self._cdp_call(ws, "Target.createTarget", {
                     "url": "about:blank",
                     "newWindow": False,
                 })
                 target_id = target_id["targetId"]
+                t_target = time.monotonic()
 
-                # 2. Attach to the target to get a session
+                # 2. Attach to the target
                 session = await self._cdp_call(ws, "Target.attachToTarget", {
                     "targetId": target_id,
                     "flatten": True,
@@ -376,32 +378,46 @@ class EdgeCDPClient:
                 session_id = session["sessionId"]
 
                 try:
-                    # 3. Enable Page domain
-                    await self._cdp_call(ws, "Page.enable", {},
-                                         session_id)
+                    # 3. Enable domains
+                    await self._cdp_call(ws, "Page.enable", {}, session_id)
+                    await self._cdp_call(ws, "Runtime.enable", {}, session_id)
 
-                    # 4. Navigate to the HTML via data: URI
-                    html_b64 = base64.b64encode(html.encode("utf-8")).decode()
-                    data_url = f"data:text/html;base64,{html_b64}"
+                    # 4. Write HTML to temp file (avoid data: URI base64 + size limit)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".html", delete=False, encoding="utf-8"
+                    ) as f:
+                        f.write(html)
+                        temp_html = f.name
+                    file_url = Path(temp_html).absolute().as_uri()
 
-                    # Set up load event promise BEFORE navigating
-                    load_promise = self._wait_for_event(
-                        ws, "Page.loadEventFired", session_id, timeout=15
-                    )
-
+                    # 5. Navigate to file:// URI
                     nav_result = await self._cdp_call(ws, "Page.navigate", {
-                        "url": data_url,
+                        "url": file_url,
                     }, session_id)
 
                     if nav_result.get("errorText"):
                         raise RuntimeError(
                             f"Page navigation failed: {nav_result['errorText']}"
                         )
+                    t_nav = time.monotonic()
 
-                    # 5. Wait for page to fully load
-                    await load_promise
+                    # 6. Poll document.readyState until "complete"
+                    #    (avoids event race condition — _cdp_call would consume
+                    #     Page.loadEventFired before a separate event listener sees it)
+                    for poll_i in range(80):  # 80 × 100ms = 8s max
+                        await asyncio.sleep(0.1)
+                        try:
+                            ready = await self._cdp_call(ws, "Runtime.evaluate", {
+                                "expression": "document.readyState",
+                                "returnByValue": True,
+                            }, session_id, timeout=5)
+                            if ready.get("result", {}).get("value") == "complete":
+                                break
+                        except Exception:
+                            pass  # retry on evaluate failure
+                    t_load = time.monotonic()
 
-                    # 6. Generate PDF
+                    # 7. Generate PDF
                     pdf_result = await self._cdp_call(
                         ws, "Page.printToPDF", {
                             "printBackground": True,
@@ -412,13 +428,24 @@ class EdgeCDPClient:
                         session_id,
                         timeout=30,
                     )
+                    t_pdf = time.monotonic()
 
                     pdf_bytes = base64.b64decode(pdf_result["data"])
-                    log.info("[CDP] PDF generated: %d bytes", len(pdf_bytes))
+
+                    log.info(
+                        "[CDP] PDF ready: %d bytes | "
+                        "conn=%.0fms target=%.0fms nav=%.0fms load=%.0fms pdf=%.0fms total=%.0fms",
+                        len(pdf_bytes),
+                        (t_conn - t_start) * 1000,
+                        (t_target - t_conn) * 1000,
+                        (t_nav - t_target) * 1000,
+                        (t_load - t_nav) * 1000,
+                        (t_pdf - t_load) * 1000,
+                        (t_pdf - t_start) * 1000,
+                    )
                     return pdf_bytes
 
                 finally:
-                    # Close the target (best-effort)
                     try:
                         await self._cdp_call(ws, "Target.closeTarget", {
                             "targetId": target_id,
@@ -427,9 +454,19 @@ class EdgeCDPClient:
                         pass
 
         except Exception:
-            log.error("[CDP] Failed, falling back to subprocess mode", exc_info=True)
-            # Fall back to the old subprocess approach
+            total_elapsed = time.monotonic() - t_start
+            log.error(
+                "[CDP] Failed after %.1fs, falling back to subprocess",
+                total_elapsed, exc_info=True,
+            )
             return _convert_with_edge_subprocess(html, filename)
+        finally:
+            # Clean up temp HTML file
+            if temp_html and Path(temp_html).exists():
+                try:
+                    Path(temp_html).unlink()
+                except Exception:
+                    pass
 
     # ---- CDP helpers ----
 
@@ -466,25 +503,6 @@ class EdgeCDPClient:
             # else: event or response for a different command — skip
 
         raise RuntimeError(f"CDP timeout waiting for {method}")
-
-    async def _wait_for_event(self, ws, event_name: str,
-                              session_id: str = None, timeout: int = 15) -> dict:
-        """Wait for a specific CDP event."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Timeout waiting for {event_name}")
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=min(remaining, 5))
-            except asyncio.TimeoutError:
-                continue
-            resp = json.loads(raw)
-            if (resp.get("method") == event_name and
-                (session_id is None or resp.get("sessionId") == session_id)):
-                return resp.get("params", {})
-        raise RuntimeError(f"Timeout waiting for {event_name}")
-
 
 # Global CDP client instance (initialized on startup)
 _edge_cdp: Optional[EdgeCDPClient] = None
