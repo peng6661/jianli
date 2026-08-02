@@ -423,47 +423,6 @@
         .toast.success { background:#f6ffed; border:1px solid #b7eb8f; color:#52c41a; }
         .toast.info { background:#e6f4ff; border:1px solid #91caff; color:#1677ff; }
 
-        /* ---- Export Loading Overlay ---- */
-        #exportLoadingOverlay {
-            position:fixed; inset:0; background:rgba(255,255,255,0.85); z-index:10000;
-            display:flex; align-items:center; justify-content:center;
-            backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
-        }
-        .export-loading-card {
-            background:#fff; border-radius:16px; padding:40px 48px;
-            box-shadow:0 8px 40px rgba(0,0,0,0.12); text-align:center;
-        }
-        .export-loading-spinner {
-            width:44px; height:44px; margin:0 auto 20px;
-            border:3px solid #e8e8e8; border-top-color:#1677ff;
-            border-radius:50%; animation:exportSpin 0.8s linear infinite;
-        }
-        @keyframes exportSpin { to { transform:rotate(360deg); } }
-        .export-loading-title {
-            font-size:16px; font-weight:600; color:#1f1f1f; margin-bottom:20px;
-        }
-        .export-loading-steps {
-            display:flex; gap:24px; justify-content:center;
-        }
-        .export-loading-steps .step {
-            font-size:13px; color:#bfbfbf; position:relative;
-            padding-left:18px; transition:color 0.3s;
-        }
-        .export-loading-steps .step::before {
-            content:''; position:absolute; left:0; top:50%; transform:translateY(-50%);
-            width:12px; height:12px; border-radius:50%;
-            border:2px solid #d9d9d9; transition:all 0.3s;
-        }
-        .export-loading-steps .step.done { color:#52c41a; }
-        .export-loading-steps .step.done::before {
-            background:#52c41a; border-color:#52c41a;
-            content:'✓'; color:#fff; font-size:8px; line-height:10px; text-align:center;
-        }
-        .export-loading-steps .step.active { color:#1677ff; font-weight:500; }
-        .export-loading-steps .step.active::before {
-            border-color:#1677ff; background:#e6f4ff;
-        }
-
         /* ---- Config Modal ---- */
         .modal-overlay {
             position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;
@@ -1682,7 +1641,7 @@
                             <svg viewBox="64 64 896 896" width="14" height="14"><path d="M928 160H96c-17.7 0-32 14.3-32 32v640c0 17.7 14.3 32 32 32h832c17.7 0 32-14.3 32-32V192c0-17.7-14.3-32-32-32zm-40 632H136v-39.9l138.5-164.3 150.1 178L658.1 489 888 761.6V792zm0-129.8L664.2 396.8c-3.2-3.8-9-3.8-12.2 0L424.6 666.4l-144-170.7c-3.2-3.8-9-3.8-12.2 0L136 652.7V232h752v430.2zM304 456a88 88 0 100-176 88 88 0 000 176zm0-116c15.5 0 28 12.5 28 28s-12.5 28-28 28-28-12.5-28-28 12.5-28 28-28z"/></svg>
                             导出图片
                         </button>
-                        <button class="ant-btn ant-btn-primary ant-btn-sm" onclick="exportPDF()">
+                        <button class="ant-btn ant-btn-primary ant-btn-sm js-export-btn" onclick="exportPDF()">
                             <svg viewBox="64 64 896 896" width="14" height="14"><path d="M531.3 574.4l.3-1.4c5.8-23.9 13.1-53.7 7.4-80.7-3.8-21.3-19.5-29.6-32.9-30.2-15.8-.7-29.9 8.3-33.4 21.4-6.6 24-.7 56.8 10.1 98.6-13.6 32.4-35.3 79.5-51.2 107.5-29.6 15.3-69.3 38.9-75.2 68.7-1.2 5.5.2 12.5 3.5 18.8 3.7 7 9.6 12.4 16.5 15 3 1.1 6.6 2 10.8 2 17.6 0 46.1-14.2 84.1-79.4 5.8-1.9 11.8-3.9 17.6-5.9 27.2-9.2 55.4-18.8 80.9-23.1 28.2 15.1 60.3 24.8 82.1 24.8 21.6 0 30.1-12.8 33.3-20.5 5.6-13.5 2.9-30.5-6.2-39.6-13.2-13-45.3-16.4-95.3-10.2-24.6-15-40.7-35.4-52.4-65.8z"/></svg>
                             导出 PDF
                         </button>
@@ -1708,7 +1667,7 @@
             </svg>
             <span>预览</span>
         </button>
-        <button class="mobile-tab" onclick="exportPDF()" style="color:#1677ff;">
+        <button class="mobile-tab js-export-btn" onclick="exportPDF()" style="color:#1677ff;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
                 <polyline points="14 2 14 8 20 8"/>
@@ -4604,12 +4563,26 @@
             updatePreview();
         }
 
+        // 导出状态锁（防止重复点击）
+        var _exporting = false;
+        function setExportButtonsDisabled(disabled) {
+            _exporting = disabled;
+            var btns = document.querySelectorAll('.js-export-btn');
+            for (var i = 0; i < btns.length; i++) {
+                btns[i].disabled = disabled;
+                btns[i].style.opacity = disabled ? '0.6' : '';
+                btns[i].style.pointerEvents = disabled ? 'none' : '';
+            }
+        }
+
         // ---- Export & Navigation ----
         function exportPDF() {
-            saveToLocal();
+            if (_exporting) return;  // 防重复点击
 
-            // UX: 显示加载动画，禁用重复点击
-            showExportLoading(true);
+            saveToLocal();
+            setExportButtonsDisabled(true);
+            // 持久 toast — 直到下载完成才消失
+            showToast('正在生成 PDF，请稍候...', 'info', 0);
 
             // 1. 获取简历预览区域的完整 HTML（含所有样式）
             var paper = document.getElementById('resumePaper');
@@ -4712,7 +4685,8 @@
                 return resp.blob();
             })
             .then(function(blob) {
-                showExportLoading(false);
+                dismissToast();
+                setExportButtonsDisabled(false);
                 console.log('[PDF导出] 成功, 大小:', blob.size, 'bytes');
                 var url = URL.createObjectURL(blob);
                 var a = document.createElement('a');
@@ -4725,7 +4699,8 @@
                 showToast('PDF 已导出', 'success');
             })
             .catch(function(err) {
-                showExportLoading(false);
+                dismissToast();
+                setExportButtonsDisabled(false);
                 console.error('[PDF导出] 失败:', err.message);
                 console.log('[PDF导出] 回退到浏览器打印方案');
                 showToast('后端导出失败，使用浏览器打印...', 'info');
@@ -4834,29 +4809,6 @@
                 css = '*,*::before,*::after{box-sizing:border-box}' + css;
             }
             return css;
-        }
-
-        /** 导出加载动画 */
-        function showExportLoading(show) {
-            var overlay = document.getElementById('exportLoadingOverlay');
-            if (show) {
-                if (!overlay) {
-                    overlay = document.createElement('div');
-                    overlay.id = 'exportLoadingOverlay';
-                    overlay.innerHTML = '<div class="export-loading-card">' +
-                        '<div class="export-loading-spinner"></div>' +
-                        '<div class="export-loading-title">正在生成 PDF</div>' +
-                        '<div class="export-loading-steps">' +
-                            '<span class="step done">准备数据</span>' +
-                            '<span class="step active">服务端渲染</span>' +
-                            '<span class="step">下载文件</span>' +
-                        '</div></div>';
-                    document.body.appendChild(overlay);
-                }
-                overlay.style.display = 'flex';
-            } else {
-                if (overlay) overlay.style.display = 'none';
-            }
         }
 
         /** 回退方案 — 在新窗口中展示简历内容（用户可自行打印或另存为 PDF） */
@@ -5441,11 +5393,19 @@
             switchMobilePanel(isPreview ? 'editor' : 'preview');
         }
         function goBack() { saveToLocal(); window.location.href = 'index.html'; }
-        function showToast(msg, type) {
+        function showToast(msg, type, duration) {
             var toast = document.getElementById('toast');
             toast.textContent = msg; toast.className = 'toast ' + (type || 'info') + ' show';
             clearTimeout(toast._timer);
-            toast._timer = setTimeout(function() { toast.classList.remove('show'); }, 3000);
+            // duration=0 表示持久显示（不自动消失）
+            if (duration !== 0) {
+                toast._timer = setTimeout(function() { toast.classList.remove('show'); }, (duration || 3000));
+            }
+        }
+        function dismissToast() {
+            var toast = document.getElementById('toast');
+            clearTimeout(toast._timer);
+            toast.classList.remove('show');
         }
 
         // ---- 优雅弹窗（确认 / 输入） ----
