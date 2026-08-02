@@ -22,10 +22,12 @@ services:
       # PDF concurrency: max simultaneous Edge processes (each ~100-150MB)
       # 8GB RAM: ample memory, 8 concurrent = ~1.2GB, plenty of headroom
       - MAX_CONCURRENT_PDFS=8
-      # Edge virtual time budget (ms): font loading + initial render only (no JS)
-      - EDGE_VIRTUAL_TIME_BUDGET=500
-      # Per-request timeout (seconds). Edge PDF render should finish <10s
-      - EDGE_TIMEOUT=20
+      # Edge virtual time budget (ms): font loading + initial render
+      # CJK fonts (Microsoft YaHei) take longer to rasterize on first render.
+      - EDGE_VIRTUAL_TIME_BUDGET=3000
+      # Per-request timeout (seconds). Subprocess cold-start on low-resource
+      # servers can take 30-60s. Once CDP is working, this is never hit.
+      - EDGE_TIMEOUT=90
     volumes:
       # Optional: mount custom fonts for PDF rendering
       # - ./fonts:/usr/share/fonts/custom:ro
