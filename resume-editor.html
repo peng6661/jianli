@@ -4496,9 +4496,14 @@
             if (viewMode === 'paginated') {
                 pageSizeRule = '@page { size: A4; margin: 0; }';
             } else {
-                // 默认视图：前端给初始 @page 高度值
+                // 默认视图：前端给初始 @page 高度值（含 border + padding）
                 // Edge 会执行嵌入 JS 重新测量精确高度（Blink 引擎，和浏览器一致）
-                var measuredH = Math.ceil(paper.getBoundingClientRect().height) + 30;
+                var paperRect = paper.getBoundingClientRect();
+                var paperStyle = window.getComputedStyle(paper);
+                var paperBorderTop = parseFloat(paperStyle.borderTopWidth) || 0;
+                var paperBorderBottom = parseFloat(paperStyle.borderBottomWidth) || 0;
+                // 初始估算 = 内容高度 + border，留少量余量（Edge 会二次精确测量）
+                var measuredH = Math.ceil(paperRect.height + paperBorderTop + paperBorderBottom + 4);
                 var measuredMm = Math.ceil(measuredH / 3.779);
                 pageSizeRule = '@page { size: 210mm ' + measuredMm + 'mm; margin: 0; }';
             }
@@ -4521,7 +4526,8 @@
                 '.paginated-page { overflow: hidden; height: 297mm !important; border: none !important; outline: none !important; }',
                 '.resume-paper, .paginated-page { font-family: ' + heitiFontStack + ' !important; }',
                 '.resume-paper *, .paginated-page * { font-family: inherit !important; }',
-                viewMode !== 'paginated' ? '.resume-paper { min-height: 0 !important; padding-bottom: 6px !important; }' : '',
+                // 连续视图：去掉 border（消除底部分隔线），min-height 归零让内容撑开
+                viewMode !== 'paginated' ? '.resume-paper { min-height: 0 !important; height: auto !important; border: none !important; box-shadow: none !important; }' : '',
                 viewMode === 'paginated' ? '.rp-section { page-break-inside: avoid; break-inside: avoid; }' : '',
             ].filter(Boolean).join('\n');
 
@@ -4547,10 +4553,13 @@
                         'if(!r)return;' +
                         'var c=r.lastElementChild;' +
                         'if(!c)return;' +
+                        'var rs=getComputedStyle(r);' +
                         'var t=r.getBoundingClientRect().top;' +
                         'var b=c.getBoundingClientRect().bottom;' +
                         'var m=parseInt(getComputedStyle(c).marginBottom)||0;' +
-                        'var h=b-t+m+6;' +
+                        'var p=parseInt(rs.paddingBottom)||0;' +
+                        'var bw=parseInt(rs.borderBottomWidth)||0;' +
+                        'var h=b-t+m+p+bw;' +
                         'var mm=Math.ceil(h/3.779);' +
                         'var s=document.createElement("style");' +
                         's.textContent="@page{size:210mm "+mm+"mm;margin:0}";' +
