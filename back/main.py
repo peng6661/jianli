@@ -610,19 +610,14 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
             t_timeout = time.monotonic()
             log.warning("[Edge] Timed out after %.1fs (limit=%ds, spawn=%.1fs), killing process group...",
                        t_timeout - t0, EDGE_TIMEOUT, t_spawn - t0)
-            # Capture partial output before killing
-            try:
-                stdout_data = process.stdout.read() if process.stdout else b""
-            except Exception:
-                stdout_data = b""
-            # Kill entire process group (Edge spawns child processes —
-            # renderer, GPU, utility — which would become orphans if
-            # we only killed the parent).
+            # Kill first — don't read stdout yet; process.stdout.read()
+            # blocks until pipe close (Edge exit), which could take 60s+
+            # if Edge is stuck in D-state (uninterruptible sleep).
+            stdout_data = b"(timed out before reading stdout)"
             try:
                 pgid = os.getpgid(process.pid)
                 os.killpg(pgid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
-                # Process already exited or pgid invalid; fall back to plain kill
                 process.kill()
             # Secondary timeout: process.wait() can hang if Edge processes
             # are stuck in D-state (uninterruptible sleep, e.g. swap thrashing).
