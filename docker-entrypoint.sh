@@ -9,8 +9,8 @@ echo ""
 
 # ============================================
 # 1. Create swap file (1GB) if no swap exists
-#    1GB RAM + 1GB swap = 2GB virtual memory.
-#    4 concurrent Edge processes (~600MB) fit comfortably.
+#    8GB RAM is ample for 8 concurrent Edge processes (~1.2GB).
+#    Swap is a safety net for memory spikes, not a necessity.
 #
 #    IMPORTANT: swap file MUST be on ext4/xfs, NOT overlayfs.
 #    Docker container root fs is overlayfs → swapon returns EINVAL.

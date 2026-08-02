@@ -20,8 +20,8 @@ services:
       - ALLOWED_ORIGINS=*
       - HOST=0.0.0.0
       # PDF concurrency: max simultaneous Edge processes (each ~100-150MB)
-      # 1GB RAM: ~800MB available, 4 concurrent = 400-600MB, safe margin
-      - MAX_CONCURRENT_PDFS=4
+      # 8GB RAM: ample memory, 8 concurrent = ~1.2GB, plenty of headroom
+      - MAX_CONCURRENT_PDFS=8
       # Edge virtual time budget (ms): how long to wait for images/JS
       - EDGE_VIRTUAL_TIME_BUDGET=5000
       # Per-request timeout (seconds)
