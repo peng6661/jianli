@@ -8,9 +8,9 @@ echo "========================================"
 echo ""
 
 # ============================================
-# 1. Create swap file (2GB) if no swap exists
-#    Server has limited RAM (~435MB available, 0 swap).
-#    Edge/Chromium needs 300-500MB. Swap provides virtual memory.
+# 1. Create swap file (1GB) if no swap exists
+#    1GB RAM + 1GB swap = 2GB virtual memory.
+#    4 concurrent Edge processes (~600MB) fit comfortably.
 #
 #    IMPORTANT: swap file MUST be on ext4/xfs, NOT overlayfs.
 #    Docker container root fs is overlayfs → swapon returns EINVAL.
@@ -21,13 +21,13 @@ echo "[1/4] Checking swap..."
 if swapon --show 2>/dev/null | grep -q swap; then
     echo "  Swap already active, skipping."
 else
-    echo "  Creating 500MB swap file on Docker volume (/swap)..."
+    echo "  Creating 1GB swap file on Docker volume (/swap)..."
     # fallocate is instant (pre-allocates space without writing zeros)
-    if fallocate -l 512M "$SWAP_FILE" 2>/dev/null; then
+    if fallocate -l 1G "$SWAP_FILE" 2>/dev/null; then
         echo "  Allocated via fallocate (instant)."
     else
         echo "  fallocate not supported, falling back to dd (slow)..."
-        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=512 status=progress
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=1024 status=progress
     fi
     chmod 600 "$SWAP_FILE"
     mkswap "$SWAP_FILE"

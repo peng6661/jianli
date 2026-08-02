@@ -100,8 +100,9 @@ app = FastAPI(
 # Concurrency control
 # ============================================
 # Edge multi-process mode uses ~100-150 MB per request.
-# Server has ~435 MB RAM + 512 MB swap. Limit concurrent Edge
-# instances to avoid OOM kills. Override via env var if needed.
+# 1GB RAM + 1GB swap. Limit concurrent Edge instances to 4
+# (4 × 150MB = 600MB, leaving room for FastAPI + Nginx).
+# Override via env var if needed.
 MAX_CONCURRENT_PDFS = int(os.environ.get("MAX_CONCURRENT_PDFS", "2"))
 
 # Virtual time budget for Edge (ms). Controls how long Edge fast-forwards
