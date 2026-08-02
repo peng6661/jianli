@@ -21,13 +21,13 @@ echo "[1/4] Checking swap..."
 if swapon --show 2>/dev/null | grep -q swap; then
     echo "  Swap already active, skipping."
 else
-    echo "  Creating 2GB swap file on Docker volume (/swap)..."
+    echo "  Creating 500MB swap file on Docker volume (/swap)..."
     # fallocate is instant (pre-allocates space without writing zeros)
-    if fallocate -l 2G "$SWAP_FILE" 2>/dev/null; then
+    if fallocate -l 512M "$SWAP_FILE" 2>/dev/null; then
         echo "  Allocated via fallocate (instant)."
     else
         echo "  fallocate not supported, falling back to dd (slow)..."
-        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=2048 status=progress
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=512 status=progress
     fi
     chmod 600 "$SWAP_FILE"
     mkswap "$SWAP_FILE"
