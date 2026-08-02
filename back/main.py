@@ -13,6 +13,7 @@ to provide Edge with enough virtual memory on resource-constrained servers.
 import os
 import sys
 import time
+import signal
 import shutil
 import logging
 import tempfile
@@ -152,6 +153,40 @@ class HealthResponse(BaseModel):
 
 
 # ============================================
+# Edge temp file cleanup
+# ============================================
+def cleanup_edge_temp_files():
+    """Remove leftover Edge temp files from previous runs.
+
+    Edge can leave behind profile directories, socket files, and crash dumps
+    in /tmp. These accumulate over time and waste container memory.
+    Called:
+    - At the start of each PDF request (lightweight, catches orphans).
+    - On server startup (one-time sweep).
+    """
+    patterns = [
+        "/tmp/edge-profile-*",                # Profile dirs from crashed requests
+        "/tmp/.org.chromium.Chromium.*",       # Singleton socket leftovers
+        "/tmp/.com.microsoft.Edge.*",          # Edge socket leftovers
+        "/tmp/tmp*.html",                      # Orphaned HTML temp files
+        "/tmp/tmp*.pdf",                       # Orphaned PDF temp files
+    ]
+    cleaned = 0
+    for pattern in patterns:
+        for p in Path("/").glob(pattern.lstrip("/")):
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                cleaned += 1
+            except Exception:
+                pass
+    if cleaned > 0:
+        log.info("[Cleanup] Removed %d leftover temp files/dirs", cleaned)
+
+
+# ============================================
 # Edge PDF conversion
 # ============================================
 def _convert_with_edge(html: str, filename: str) -> bytes:
@@ -164,9 +199,17 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
     Each request gets a unique --user-data-dir to avoid concurrent conflicts
     (Edge holds a file lock on its profile directory). Temp directories are
     cleaned up in the finally block.
+
+    Edge runs in its own process session (start_new_session=True). On timeout,
+    the entire process group is killed via os.killpg() — this ensures all Edge
+    child processes (renderer, GPU, utility) are terminated, not just the parent.
     """
     if not EDGE_PATH:
         raise RuntimeError("Edge binary not found")
+
+    # Clean up any leftover temp files from previously crashed/timed-out
+    # requests before starting a new Edge process.
+    cleanup_edge_temp_files()
 
     temp_html = None
     temp_pdf = None
@@ -231,6 +274,7 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             env=env,
+            start_new_session=True,  # New process group → killpg kills all children
         )
 
         try:
@@ -241,7 +285,15 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
                 stdout_data = process.stdout.read() if process.stdout else b""
             except Exception:
                 stdout_data = b""
-            process.kill()
+            # Kill entire process group (Edge spawns child processes —
+            # renderer, GPU, utility — which would become orphans if
+            # we only killed the parent).
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                # Process already exited or pgid invalid; fall back to plain kill
+                process.kill()
             process.wait()
             # Check if PDF was created before timeout (Edge sometimes
             # generates the PDF but doesn't exit cleanly)
@@ -510,6 +562,9 @@ async def export_pdf(request: PdfExportRequest):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     host = os.environ.get("HOST", "0.0.0.0")
+
+    # One-time cleanup of leftover temp files from previous container runs
+    cleanup_edge_temp_files()
 
     print("=" * 50)
     print("  Resume Editor PDF Service (Cloud Edition)")
