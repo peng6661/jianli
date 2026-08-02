@@ -11,18 +11,35 @@ echo ""
 # 1. Create swap file (2GB) if no swap exists
 #    Server has limited RAM (~435MB available, 0 swap).
 #    Edge/Chromium needs 300-500MB. Swap provides virtual memory.
+#
+#    IMPORTANT: swap file MUST be on ext4/xfs, NOT overlayfs.
+#    Docker container root fs is overlayfs → swapon returns EINVAL.
+#    We use a Docker named volume (/swap) which is backed by host ext4.
 # ============================================
+SWAP_FILE=/swap/swapfile
 echo "[1/4] Checking swap..."
 if swapon --show 2>/dev/null | grep -q swap; then
     echo "  Swap already active, skipping."
 else
-    echo "  Creating 2GB swap file..."
-    dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    echo "  Swap enabled successfully."
-    swapon --show
+    echo "  Creating 2GB swap file on Docker volume (/swap)..."
+    # fallocate is instant (pre-allocates space without writing zeros)
+    if fallocate -l 2G "$SWAP_FILE" 2>/dev/null; then
+        echo "  Allocated via fallocate (instant)."
+    else
+        echo "  fallocate not supported, falling back to dd (slow)..."
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=2048 status=progress
+    fi
+    chmod 600 "$SWAP_FILE"
+    mkswap "$SWAP_FILE"
+    # swapon may fail (e.g. unsupported fs) — don't let set -e kill the script
+    swapon "$SWAP_FILE" 2>&1 || true
+    if swapon --show 2>/dev/null | grep -q swap; then
+        echo "  Swap enabled successfully."
+        swapon --show
+    else
+        echo "  WARNING: swapon failed! Edge may OOM on large PDFs."
+        echo "  Continuing without swap..."
+    fi
 fi
 
 # ============================================

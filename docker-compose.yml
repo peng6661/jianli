@@ -23,14 +23,18 @@ services:
       # Optional: mount custom fonts for PDF rendering
       # - ./fonts:/usr/share/fonts/custom:ro
       - ./logs:/app/logs
+      - swapvol:/swap             # Docker volume on host ext4, supports swapon
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s           # Extra time for swap creation + Edge init
+      start_period: 60s           # Extra time for swap creation + Edge init
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  swapvol:
