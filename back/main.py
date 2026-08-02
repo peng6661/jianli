@@ -407,6 +407,15 @@ class EdgeCDPClient:
 
         temp_html = None
         try:
+            # Write HTML to temp file FIRST, then create target directly at
+            # the file:// URI — saves one about:blank → navigate round trip.
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".html", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(html)
+                temp_html = f.name
+            file_url = Path(temp_html).absolute().as_uri()
+
             async with websockets.connect(
                 ws_url,
                 max_size=10 * 1024 * 1024,
@@ -415,9 +424,9 @@ class EdgeCDPClient:
             ) as ws:
                 t_conn = time.monotonic()
 
-                # 1. Create a new target (tab)
+                # 1. Create a new target directly at the HTML file
                 target_id = await self._cdp_call(ws, "Target.createTarget", {
-                    "url": "about:blank",
+                    "url": file_url,
                     "newWindow": False,
                 })
                 target_id = target_id["targetId"]
@@ -431,46 +440,26 @@ class EdgeCDPClient:
                 session_id = session["sessionId"]
 
                 try:
-                    # 3. Enable domains
+                    # 3. Enable Page domain (Runtime not needed for readyState polling)
                     await self._cdp_call(ws, "Page.enable", {}, session_id)
-                    await self._cdp_call(ws, "Runtime.enable", {}, session_id)
 
-                    # 4. Write HTML to temp file (avoid data: URI base64 + size limit)
-                    with tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".html", delete=False, encoding="utf-8"
-                    ) as f:
-                        f.write(html)
-                        temp_html = f.name
-                    file_url = Path(temp_html).absolute().as_uri()
-
-                    # 5. Navigate to file:// URI
-                    nav_result = await self._cdp_call(ws, "Page.navigate", {
-                        "url": file_url,
-                    }, session_id)
-
-                    if nav_result.get("errorText"):
-                        raise RuntimeError(
-                            f"Page navigation failed: {nav_result['errorText']}"
-                        )
-                    t_nav = time.monotonic()
-
-                    # 6. Poll document.readyState until "complete"
-                    #    (avoids event race condition — _cdp_call would consume
-                    #     Page.loadEventFired before a separate event listener sees it)
-                    for poll_i in range(80):  # 80 × 100ms = 8s max
-                        await asyncio.sleep(0.1)
+                    # 4. Poll document.readyState until "complete"
+                    #    Short poll interval (50ms) — file:// URIs render fast
+                    #    since there are no network requests.
+                    for poll_i in range(160):  # 160 × 50ms = 8s max
+                        await asyncio.sleep(0.05)
                         try:
                             ready = await self._cdp_call(ws, "Runtime.evaluate", {
                                 "expression": "document.readyState",
                                 "returnByValue": True,
-                            }, session_id, timeout=5)
+                            }, session_id, timeout=3)
                             if ready.get("result", {}).get("value") == "complete":
                                 break
                         except Exception:
                             pass  # retry on evaluate failure
                     t_load = time.monotonic()
 
-                    # 7. Generate PDF
+                    # 5. Generate PDF
                     pdf_result = await self._cdp_call(
                         ws, "Page.printToPDF", {
                             "printBackground": True,
@@ -487,12 +476,11 @@ class EdgeCDPClient:
 
                     log.info(
                         "[CDP] PDF ready: %d bytes | "
-                        "conn=%.0fms target=%.0fms nav=%.0fms load=%.0fms pdf=%.0fms total=%.0fms",
+                        "conn=%.0fms target=%.0fms load=%.0fms pdf=%.0fms total=%.0fms",
                         len(pdf_bytes),
                         (t_conn - t_start) * 1000,
                         (t_target - t_conn) * 1000,
-                        (t_nav - t_target) * 1000,
-                        (t_load - t_nav) * 1000,
+                        (t_load - t_target) * 1000,
                         (t_pdf - t_load) * 1000,
                         (t_pdf - t_start) * 1000,
                     )
