@@ -8,6 +8,23 @@ echo "========================================"
 echo ""
 
 # ============================================
+# 0. Refresh fontconfig cache (re-scan mounted /usr/share/fonts/custom)
+#    fc-cache was already run during docker build, but fonts/custom is mounted
+#    at runtime (volume), so we must re-scan now. Otherwise SimSun alias matches
+#    won't resolve the mounted simsun.ttc until fc-cache runs again.
+# ============================================
+echo "[0/5] Refreshing font cache (scanning mounted fonts)..."
+if [ -d /usr/share/fonts/custom ] && [ -n "$(ls -A /usr/share/fonts/custom 2>/dev/null)" ]; then
+    fc-cache -f /usr/share/fonts/custom 2>&1 || true
+    echo "  Custom fonts found:"
+    fc-list | grep -i "SimSun\|simsun\|宋体" | head -5 || echo "  (SimSun not detected in fc-list — check fonts mount)"
+else
+    echo "  No custom fonts mounted (/usr/share/fonts/custom empty)."
+    echo "  Using system fallback fonts (WenQuanYi / Liberation)."
+fi
+echo ""
+
+# ============================================
 # 1. Create swap file (1GB) if no swap exists
 #    8GB RAM is ample for 8 concurrent Edge processes (~1.2GB).
 #    Swap is a safety net for memory spikes, not a necessity.
@@ -17,7 +34,7 @@ echo ""
 #    We use a Docker named volume (/swap) which is backed by host ext4.
 # ============================================
 SWAP_FILE=/swap/swapfile
-echo "[1/4] Checking swap..."
+echo "[1/5] Checking swap..."
 if swapon --show 2>/dev/null | grep -q swap; then
     echo "  Swap already active, skipping."
 else
@@ -45,7 +62,7 @@ fi
 # ============================================
 # 2. Start D-Bus daemon (Edge needs it on Linux)
 # ============================================
-echo "[2/4] Starting D-Bus daemon..."
+echo "[2/5] Starting D-Bus daemon..."
 mkdir -p /run/dbus
 rm -f /run/dbus/system_bus_socket  # Clean stale socket
 dbus-daemon --system --fork
@@ -54,7 +71,7 @@ echo "  D-Bus started (pid: $(cat /run/dbus/system_bus_socket.pid 2>/dev/null ||
 # ============================================
 # 3. Start FastAPI backend
 # ============================================
-echo "[3/4] Starting FastAPI PDF service (port 8080)..."
+echo "[3/5] Starting FastAPI PDF service (port 8080)..."
 cd /app
 uvicorn back.main:app --host 127.0.0.1 --port 8080 --log-level info &
 BACKEND_PID=$!
@@ -75,7 +92,7 @@ done
 # ============================================
 # 4. Start Nginx
 # ============================================
-echo "[4/4] Starting Nginx (port 80)..."
+echo "[4/5] Starting Nginx (port 80)..."
 echo ""
 echo "  Site:     http://localhost"
 echo "  API:      http://localhost/api/health"

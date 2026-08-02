@@ -46,3 +46,7 @@ back/start_server.py
 # 部署包（改为 Gitee Release 附件分发，不纳入仓库）
 简历网站部署.exe
 简历网站部署.zip
+
+# 自定义字体（微软版权字体，不上传到公开仓库，部署时通过 docker volume 挂载到服务器本机）
+fonts/*
+!fonts/.gitkeep
