@@ -24,8 +24,8 @@ services:
       - MAX_CONCURRENT_PDFS=8
       # Edge virtual time budget (ms): font loading + initial render only (no JS)
       - EDGE_VIRTUAL_TIME_BUDGET=500
-      # Per-request timeout (seconds)
-      - EDGE_TIMEOUT=60
+      # Per-request timeout (seconds). Edge PDF render should finish <10s
+      - EDGE_TIMEOUT=20
     volumes:
       # Optional: mount custom fonts for PDF rendering
       # - ./fonts:/usr/share/fonts/custom:ro

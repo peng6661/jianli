@@ -117,7 +117,9 @@ MAX_CONCURRENT_PDFS = int(os.environ.get("MAX_CONCURRENT_PDFS", "2"))
 EDGE_VIRTUAL_TIME_BUDGET = int(os.environ.get("EDGE_VIRTUAL_TIME_BUDGET", "500"))
 
 # Per-request timeout (seconds). Edge should finish well within this.
-EDGE_TIMEOUT = int(os.environ.get("EDGE_TIMEOUT", "60"))
+# With CDP mode, typical render time is <3s. Subprocess fallback may
+# take longer due to cold start. 20s is a generous upper bound.
+EDGE_TIMEOUT = int(os.environ.get("EDGE_TIMEOUT", "20"))
 
 # Semaphore — initialised lazily (asyncio.Semaphore needs a running loop)
 _pdf_semaphore: Optional[asyncio.Semaphore] = None
