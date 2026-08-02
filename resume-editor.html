@@ -423,6 +423,47 @@
         .toast.success { background:#f6ffed; border:1px solid #b7eb8f; color:#52c41a; }
         .toast.info { background:#e6f4ff; border:1px solid #91caff; color:#1677ff; }
 
+        /* ---- Export Loading Overlay ---- */
+        #exportLoadingOverlay {
+            position:fixed; inset:0; background:rgba(255,255,255,0.85); z-index:10000;
+            display:flex; align-items:center; justify-content:center;
+            backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+        }
+        .export-loading-card {
+            background:#fff; border-radius:16px; padding:40px 48px;
+            box-shadow:0 8px 40px rgba(0,0,0,0.12); text-align:center;
+        }
+        .export-loading-spinner {
+            width:44px; height:44px; margin:0 auto 20px;
+            border:3px solid #e8e8e8; border-top-color:#1677ff;
+            border-radius:50%; animation:exportSpin 0.8s linear infinite;
+        }
+        @keyframes exportSpin { to { transform:rotate(360deg); } }
+        .export-loading-title {
+            font-size:16px; font-weight:600; color:#1f1f1f; margin-bottom:20px;
+        }
+        .export-loading-steps {
+            display:flex; gap:24px; justify-content:center;
+        }
+        .export-loading-steps .step {
+            font-size:13px; color:#bfbfbf; position:relative;
+            padding-left:18px; transition:color 0.3s;
+        }
+        .export-loading-steps .step::before {
+            content:''; position:absolute; left:0; top:50%; transform:translateY(-50%);
+            width:12px; height:12px; border-radius:50%;
+            border:2px solid #d9d9d9; transition:all 0.3s;
+        }
+        .export-loading-steps .step.done { color:#52c41a; }
+        .export-loading-steps .step.done::before {
+            background:#52c41a; border-color:#52c41a;
+            content:'✓'; color:#fff; font-size:8px; line-height:10px; text-align:center;
+        }
+        .export-loading-steps .step.active { color:#1677ff; font-weight:500; }
+        .export-loading-steps .step.active::before {
+            border-color:#1677ff; background:#e6f4ff;
+        }
+
         /* ---- Config Modal ---- */
         .modal-overlay {
             position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;
@@ -4459,14 +4500,15 @@
         // ---- Export & Navigation ----
         function exportPDF() {
             saveToLocal();
-            showToast('正在生成 PDF...', 'info');
+
+            // UX: 显示加载动画，禁用重复点击
+            showExportLoading(true);
 
             // 1. 获取简历预览区域的完整 HTML（含所有样式）
             var paper = document.getElementById('resumePaper');
             var title = document.getElementById('resumeTitle').value || '我的简历';
 
             // 分页视图下：克隆预览页面的 .paginated-page 作为 PDF 每页内容
-            // 加上 page-break-after 确保每页独立分页
             var pageContents = [];
             if (viewMode === 'paginated') {
                 var pageDivs = document.querySelectorAll('.paginated-page');
@@ -4491,82 +4533,44 @@
             var template = document.getElementById('cfgTemplateSelect') ? document.getElementById('cfgTemplateSelect').value : 'modern';
 
             // 3. 根据视图模式决定 PDF 纸张大小
-            // 分页视图 → 标准 A4；默认视图 → 动态高度（一页显示全部）
             var pageSizeRule;
             if (viewMode === 'paginated') {
                 pageSizeRule = '@page { size: A4; margin: 0; }';
             } else {
-                // 默认视图：前端给初始 @page 高度值（含 border + padding）
-                // Edge 会执行嵌入 JS 重新测量精确高度（Blink 引擎，和浏览器一致）
+                // 前端精确计算 @page 高度（与 Edge 渲染一致，同是 Blink 引擎）
+                // 无需 Edge 端二次 JS 测量 → 省去 window.onload + setTimeout(200) 等待
                 var paperRect = paper.getBoundingClientRect();
-                var paperStyle = window.getComputedStyle(paper);
-                var paperBorderTop = parseFloat(paperStyle.borderTopWidth) || 0;
-                var paperBorderBottom = parseFloat(paperStyle.borderBottomWidth) || 0;
-                // 初始估算 = 内容高度 + border，留少量余量（Edge 会二次精确测量）
-                var measuredH = Math.ceil(paperRect.height + paperBorderTop + paperBorderBottom + 4);
-                var measuredMm = Math.ceil(measuredH / 3.779);
-                pageSizeRule = '@page { size: 210mm ' + measuredMm + 'mm; margin: 0; }';
+                var exactH = paperRect.height; // fallback
+                var lastChild = paper.lastElementChild;
+                if (lastChild) {
+                    var paperCS = window.getComputedStyle(paper);
+                    var lastCS = window.getComputedStyle(lastChild);
+                    var padB = parseFloat(paperCS.paddingBottom) || 0;
+                    var borB = parseFloat(paperCS.borderBottomWidth) || 0;
+                    var marB = parseFloat(lastCS.marginBottom) || 0;
+                    exactH = Math.ceil(lastChild.getBoundingClientRect().bottom - paperRect.top + marB + padB + borB);
+                }
+                var exactMm = Math.ceil(exactH / 3.779);
+                pageSizeRule = '@page { size: 210mm ' + exactMm + 'mm; margin: 0; }';
             }
 
-            // 构建完整的 PDF 用 HTML（复用预览 CSS，保证样式一致）
-            // 读取预览页面已有的 CSS，确保导出样式与预览完全一致
-            var previewStyles = document.querySelectorAll('style');
-            var baseCSS = '';
-            previewStyles.forEach(function(s) {
-                baseCSS += s.innerHTML + '\n';
-            });
+            // 4. 构建 PDF 专用 CSS（只保留简历内容相关样式，去掉编辑器 UI 样式）
+            var pdfCSS = buildExportCSS(pageSizeRule, viewMode);
 
-            // 导出专有覆盖：确保分页裁剪 + 黑体渲染生效
+            // 5. 构建 PDF body
             var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
-            var overrideCSS = [
-                pageSizeRule,
-                'html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
-                // ★ PDF 导出强制使用黑体栈（html/body 设基础字体，resume-paper/paginated-page 加固）
-                'html, body { margin: 0; padding: 0; background: #fff; font-family: ' + heitiFontStack + ' !important; }',
-                '.paginated-page { overflow: hidden; height: 297mm !important; border: none !important; outline: none !important; }',
-                '.resume-paper, .paginated-page { font-family: ' + heitiFontStack + ' !important; }',
-                '.resume-paper *, .paginated-page * { font-family: inherit !important; }',
-                // 连续视图：去掉 border（消除底部分隔线），min-height 归零让内容撑开
-                viewMode !== 'paginated' ? '.resume-paper { min-height: 0 !important; height: auto !important; border: none !important; box-shadow: none !important; }' : '',
-                viewMode === 'paginated' ? '.rp-section { page-break-inside: avoid; break-inside: avoid; }' : '',
-            ].filter(Boolean).join('\n');
-
-            var pdfCSS = baseCSS + '\n' + overrideCSS;
-
-            // 构建 PDF body：分页视图直接用预览的 .paginated-page HTML，连续视图用 paper 内容
             var bodyHtml = '';
             if (viewMode === 'paginated' && pageContents.length > 0) {
                 bodyHtml = pageContents.join('\n');
             } else {
-                // 连续视图：给内联 paper 也加上黑体 font-family（第三重保险）
                 var contentStyle = 'padding:' + paper.style.padding + ';line-height:' + paper.style.lineHeight + ';font-size:' + paper.style.fontSize + ';font-family:' + heitiFontStack + ';';
                 bodyHtml = '<div class="resume-paper" style="' + contentStyle + '">' + paper.innerHTML + '</div>';
             }
 
+            // 无需重测量 JS — 前端已精确计算 @page 高度
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
                 + '<title>' + title + '</title>'
                 + '<style>' + pdfCSS + '</style>'
-                + (viewMode !== 'paginated' ? '<script>' +
-                    'window.onload=function(){' +
-                      'setTimeout(function(){' +
-                        'var r=document.querySelector(".resume-paper");' +
-                        'if(!r)return;' +
-                        'var c=r.lastElementChild;' +
-                        'if(!c)return;' +
-                        'var rs=getComputedStyle(r);' +
-                        'var t=r.getBoundingClientRect().top;' +
-                        'var b=c.getBoundingClientRect().bottom;' +
-                        'var m=parseInt(getComputedStyle(c).marginBottom)||0;' +
-                        'var p=parseInt(rs.paddingBottom)||0;' +
-                        'var bw=parseInt(rs.borderBottomWidth)||0;' +
-                        'var h=b-t+m+p+bw;' +
-                        'var mm=Math.ceil(h/3.779);' +
-                        'var s=document.createElement("style");' +
-                        's.textContent="@page{size:210mm "+mm+"mm;margin:0}";' +
-                        'document.head.appendChild(s);' +
-                      '},200);' +
-                    '}' +
-                '<\/script>' : '')
                 + '</head><body>'
                 + bodyHtml
                 + '</body></html>';
@@ -4601,8 +4605,8 @@
                 return resp.blob();
             })
             .then(function(blob) {
+                showExportLoading(false);
                 console.log('[PDF导出] 成功, 大小:', blob.size, 'bytes');
-                // 下载 PDF
                 var url = URL.createObjectURL(blob);
                 var a = document.createElement('a');
                 a.href = url;
@@ -4614,11 +4618,138 @@
                 showToast('PDF 已导出', 'success');
             })
             .catch(function(err) {
+                showExportLoading(false);
                 console.error('[PDF导出] 失败:', err.message);
                 console.log('[PDF导出] 回退到浏览器打印方案');
                 showToast('后端导出失败，使用浏览器打印...', 'info');
                 fallbackPrintExport(fullHtml, title);
             });
+        }
+
+        /** 构建 PDF 导出专用 CSS — 只保留简历内容样式，去掉编辑器 UI 样式 */
+        function buildExportCSS(pageSizeRule, viewMode) {
+            var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
+
+            // 1. 复制 #cfg-dynamic-style（用户配置的动态样式：字号/颜色/间距）
+            var dynStyle = document.getElementById('cfg-dynamic-style');
+            var dynamicCSS = dynStyle ? dynStyle.innerHTML : '';
+
+            // 2. 从主 style 中提取简历内容相关 CSS（只保留 .rp-* .resume-paper .paginated-page 等）
+            var resumeCSS = extractResumeCSS();
+
+            // 3. 导出覆盖 CSS（@page / 黑体 / 分页裁剪）
+            var overrideCSS = [
+                pageSizeRule,
+                'html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
+                'html, body { margin: 0; padding: 0; background: #fff; font-family: ' + heitiFontStack + ' !important; }',
+                '.paginated-page { overflow: hidden; height: 297mm !important; border: none !important; outline: none !important; }',
+                '.resume-paper, .paginated-page { font-family: ' + heitiFontStack + ' !important; }',
+                '.resume-paper *, .paginated-page * { font-family: inherit !important; }',
+                viewMode !== 'paginated' ? '.resume-paper { min-height: 0 !important; height: auto !important; border: none !important; box-shadow: none !important; }' : '',
+                viewMode === 'paginated' ? '.rp-section { page-break-inside: avoid; break-inside: avoid; }' : '',
+            ].filter(Boolean).join('\n');
+
+            return dynamicCSS + '\n' + resumeCSS + '\n' + overrideCSS;
+        }
+
+        /** 从页面样式表中提取简历内容相关 CSS（.rp-*, .resume-paper, .paginated-page） */
+        function extractResumeCSS() {
+            // 简历内容相关的选择器前缀
+            var RESUME_PATTERNS = [
+                '.rp-', '.resume-paper', '.paginated-page', '.resume-image', '.resume-inline',
+                ':root', // CSS 变量
+            ];
+            // 简历内容内可能出现的 HTML 元素基础样式
+            var RESUME_TAGS = ['p', 'ul', 'ol', 'li', 'a', 'strong', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'table', 'th', 'td', 'tr', 'blockquote', 'code', 'pre', 'hr', 'img'];
+
+            var css = '';
+            try {
+                var sheets = document.styleSheets;
+                for (var i = 0; i < sheets.length; i++) {
+                    var sheet = sheets[i];
+                    try {
+                        var rules = sheet.cssRules || sheet.rules;
+                        if (!rules) continue;
+                        for (var j = 0; j < rules.length; j++) {
+                            var rule = rules[j];
+                            if (rule.type === CSSRule.STYLE_RULE) {
+                                var sel = rule.selectorText || '';
+                                // 检查是否匹配简历内容相关选择器
+                                var keep = false;
+                                for (var k = 0; k < RESUME_PATTERNS.length; k++) {
+                                    if (sel.indexOf(RESUME_PATTERNS[k]) !== -1) { keep = true; break; }
+                                }
+                                // 也保留简历标签的基础样式（如 p, ul, li 等在选择器中）
+                                if (!keep && rule.style && rule.style.length > 0) {
+                                    for (var t = 0; t < RESUME_TAGS.length; t++) {
+                                        // 简单匹配：选择器以标签名开头或包含标签名
+                                        var tag = RESUME_TAGS[t];
+                                        if (sel === tag || sel.indexOf(tag + ',') === 0 || sel.indexOf(tag + ' ') === 0 ||
+                                            sel.indexOf(' ' + tag) !== -1 || sel.indexOf(',' + tag) !== -1 ||
+                                            sel.indexOf('.' + tag) !== -1 || sel.indexOf('#' + tag) !== -1) {
+                                            // 但要排除编辑器 UI 选择器
+                                            if (sel.indexOf('.ant-') === -1 && sel.indexOf('.editor-') === -1 &&
+                                                sel.indexOf('.tab') === -1 && sel.indexOf('.card') === -1 &&
+                                                sel.indexOf('.form-') === -1 && sel.indexOf('.btn') === -1 &&
+                                                sel.indexOf('.nav') === -1 && sel.indexOf('.header') === -1 &&
+                                                sel.indexOf('.drawer') === -1 && sel.indexOf('.modal') === -1 &&
+                                                sel.indexOf('.toast') === -1 && sel.indexOf('.toggle') === -1 &&
+                                                sel.indexOf('.slider') === -1 && sel.indexOf('.dropdown') === -1 &&
+                                                sel.indexOf('.tooltip') === -1 && sel.indexOf('.badge') === -1) {
+                                                keep = true; break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (keep) {
+                                    css += rule.cssText + '\n';
+                                }
+                            } else if (rule.type === CSSRule.MEDIA_RULE && rule.conditionText &&
+                                rule.conditionText.indexOf('print') !== -1) {
+                                // 保留 @media print 规则
+                                css += rule.cssText + '\n';
+                            }
+                        }
+                    } catch(e) {
+                        // 跨域样式表无法访问，跳过
+                    }
+                }
+            } catch(e) {
+                // CSSOM 读取失败时降级：复制所有 style 元素内容
+                var allStyles = document.querySelectorAll('style');
+                for (var s = 0; s < allStyles.length; s++) {
+                    css += allStyles[s].innerHTML + '\n';
+                }
+            }
+            // 确保基础重置样式存在
+            if (css.indexOf('box-sizing') === -1) {
+                css = '*,*::before,*::after{box-sizing:border-box}' + css;
+            }
+            return css;
+        }
+
+        /** 导出加载动画 */
+        function showExportLoading(show) {
+            var overlay = document.getElementById('exportLoadingOverlay');
+            if (show) {
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'exportLoadingOverlay';
+                    overlay.innerHTML = '<div class="export-loading-card">' +
+                        '<div class="export-loading-spinner"></div>' +
+                        '<div class="export-loading-title">正在生成 PDF</div>' +
+                        '<div class="export-loading-steps">' +
+                            '<span class="step done">准备数据</span>' +
+                            '<span class="step active">服务端渲染</span>' +
+                            '<span class="step">下载文件</span>' +
+                        '</div></div>';
+                    document.body.appendChild(overlay);
+                }
+                overlay.style.display = 'flex';
+            } else {
+                if (overlay) overlay.style.display = 'none';
+            }
         }
 
         /** 回退方案 — 在新窗口中展示简历内容（用户可自行打印或另存为 PDF） */

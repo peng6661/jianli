@@ -107,9 +107,10 @@ app = FastAPI(
 MAX_CONCURRENT_PDFS = int(os.environ.get("MAX_CONCURRENT_PDFS", "2"))
 
 # Virtual time budget for Edge (ms). Controls how long Edge fast-forwards
-# time for async operations (image loading, JS timers). 5s is sufficient
-# for typical resume pages. Override via env var.
-EDGE_VIRTUAL_TIME_BUDGET = int(os.environ.get("EDGE_VIRTUAL_TIME_BUDGET", "5000"))
+# time for async operations (image loading, JS timers).
+# Frontend now pre-calculates exact @page height — no JS execution needed in Edge.
+# 500ms is ample for font loading and initial render. Override via env var.
+EDGE_VIRTUAL_TIME_BUDGET = int(os.environ.get("EDGE_VIRTUAL_TIME_BUDGET", "500"))
 
 # Per-request timeout (seconds). Edge should finish well within this.
 EDGE_TIMEOUT = int(os.environ.get("EDGE_TIMEOUT", "60"))
