@@ -36,7 +36,11 @@ self.addEventListener('activate', event => {
 });
 
 // 拦截请求：优先从缓存读取，同时更新缓存
+// 只处理 GET 请求 — Cache API 不支持 POST/PUT/DELETE 等方法
 self.addEventListener('fetch', event => {
+    if (event.request.method !== 'GET') {
+        return;  // 不拦截非 GET 请求，让浏览器直接发送
+    }
     event.respondWith(
         caches.match(event.request).then(cached => {
             const fetchPromise = fetch(event.request).then(response => {

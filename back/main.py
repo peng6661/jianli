@@ -238,6 +238,8 @@ class EdgeCDPClient:
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
+            "--disable-features=TranslateUI,BackForwardCache",
+            "--enable-features=NetworkServiceInProcess",
             f"--user-data-dir={user_data_dir}",
             f"--remote-debugging-port={self.debug_port}",
             "about:blank",  # Keep a blank page open
@@ -256,25 +258,32 @@ class EdgeCDPClient:
             start_new_session=True,
         )
 
-        # Wait for debug port to be ready (retry up to 10s)
-        for _ in range(40):
+        # Wait for debug port to be ready (retry up to 30s)
+        # On resource-constrained servers, Edge cold start can take
+        # 15-25 seconds. 30s is a generous upper bound.
+        last_error = None
+        for i in range(120):  # 120 × 0.25s = 30s
             try:
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{self.debug_port}/json/version",
-                    timeout=1,
+                    timeout=2,
                 )
                 self._ready = True
-                log.info("[CDP] Edge browser ready on port %d (pid=%d)",
-                         self.debug_port, self.process.pid)
+                log.info("[CDP] Edge browser ready on port %d (pid=%d, attempt=%d)",
+                         self.debug_port, self.process.pid, i + 1)
                 return
-            except Exception:
+            except Exception as e:
+                last_error = e
                 time.sleep(0.25)
             if self.process.poll() is not None:
                 raise RuntimeError(
                     f"Edge exited prematurely (code={self.process.returncode})"
                 )
 
-        raise RuntimeError("Edge did not start within 10 seconds")
+        raise RuntimeError(
+            f"Edge did not start within 30 seconds. "
+            f"Last error: {last_error}"
+        )
 
     def _kill_stale(self):
         """Kill any process holding the debug port."""
@@ -522,6 +531,7 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
     if not EDGE_PATH:
         raise RuntimeError("Edge binary not found")
 
+    t0 = time.monotonic()
     # Clean up any leftover temp files from previously crashed/timed-out
     # requests before starting a new Edge process.
     cleanup_edge_temp_files()
@@ -551,15 +561,16 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
         # Build command — same simple flags as local Windows version
         # --headless=new: required for --print-to-pdf
         # --virtual-time-budget: fast-forwards time so images load
-        # --disable-dev-shm-usage: use /tmp instead of /dev/shm
-        # No --single-process, no --no-zygote — normal multi-process mode
-        # works fine with swap providing virtual memory.
+        # --single-process: avoids spawning separate renderer/GPU/utility
+        #   processes → faster startup + lower memory (~60MB vs ~150MB).
+        #   Trade-off: renderer crash kills the whole browser, but for
+        #   one-shot PDF generation this is fine (we check PDF output).
         cmd = [
             EDGE_PATH,
             "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
-            "--disable-dev-shm-usage",
+            "--single-process",
             "--disable-extensions",
             "--disable-sync",
             "--hide-scrollbars",
@@ -569,6 +580,7 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
+            "--disable-features=TranslateUI,BackForwardCache",
             f"--user-data-dir={user_data_dir}",
             f"--virtual-time-budget={EDGE_VIRTUAL_TIME_BUDGET}",
             "--print-to-pdf-no-header",
@@ -591,10 +603,14 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
             env=env,
             start_new_session=True,  # New process group → killpg kills all children
         )
+        t_spawn = time.monotonic()
 
         try:
             stdout_data, _ = process.communicate(timeout=EDGE_TIMEOUT)
         except subprocess.TimeoutExpired:
+            t_timeout = time.monotonic()
+            log.warning("[Edge] Timed out after %.1fs (limit=%ds, spawn=%.1fs), killing process group...",
+                       t_timeout - t0, EDGE_TIMEOUT, t_spawn - t0)
             # Capture partial output before killing
             try:
                 stdout_data = process.stdout.read() if process.stdout else b""
@@ -609,11 +625,23 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
             except (ProcessLookupError, OSError):
                 # Process already exited or pgid invalid; fall back to plain kill
                 process.kill()
-            process.wait()
+            # Secondary timeout: process.wait() can hang if Edge processes
+            # are stuck in D-state (uninterruptible sleep, e.g. swap thrashing).
+            # SIGKILL can't kill D-state processes — don't wait forever.
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                log.error(
+                    "[Edge] Process refused to die after SIGKILL (D-state?). "
+                    "Giving up on waiting, checking for PDF anyway..."
+                )
+            t_killed = time.monotonic()
             # Check if PDF was created before timeout (Edge sometimes
             # generates the PDF but doesn't exit cleanly)
             if Path(temp_pdf).exists() and Path(temp_pdf).stat().st_size > 0:
-                log.warning("[Edge] Process timed out but PDF was created")
+                log.warning("[Edge] Process timed out but PDF was created "
+                           "(timeout=%.1fs, kill=%.1fs, total=%.1fs)",
+                           t_timeout - t0, t_killed - t_timeout, t_killed - t0)
             else:
                 partial = stdout_data[:2000].decode("utf-8", errors="replace") if stdout_data else "(no output)"
                 log.error("[Edge] Timeout (%ds). Partial output:\n%s", EDGE_TIMEOUT, partial)
@@ -624,7 +652,9 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
         # Check if PDF was created (Edge may log errors but still produce PDF)
         if Path(temp_pdf).exists() and Path(temp_pdf).stat().st_size > 0:
             pdf_bytes = Path(temp_pdf).read_bytes()
-            log.info("[Edge] PDF generated: %d bytes (exit_code=%d)", len(pdf_bytes), exit_code)
+            t_done = time.monotonic()
+            log.info("[Edge] PDF generated: %d bytes (exit_code=%d, spawn=%.1fs, total=%.1fs)",
+                     len(pdf_bytes), exit_code, t_spawn - t0, t_done - t0)
             return pdf_bytes
 
         # PDF not created
