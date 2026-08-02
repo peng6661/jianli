@@ -13,10 +13,38 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-zenhei \
     fonts-liberation2 \
+    fontconfig \
     dbus \
     nginx \
     curl gnupg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Fontconfig: ensure proper font fallback without CSS !important overrides
+# - Arial -> Liberation Sans (already done by fonts-liberation2, but be explicit)
+# - sans-serif -> Liberation Sans -> WenQuanYi Zen Hei (CJK fallback)
+# This replaces the previous backend CSS injection approach.
+RUN cat > /etc/fonts/local.conf << 'FONTCONF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <!-- Sans-serif: Liberation Sans first, then CJK fallback -->
+  <match target="pattern">
+    <test name="family"><string>sans-serif</string></test>
+    <edit name="family" mode="append" binding="weak"><string>WenQuanYi Zen Hei</string></edit>
+  </match>
+  <!-- Arial: explicit mapping to Liberation Sans -->
+  <match target="pattern">
+    <test name="family"><string>Arial</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>Liberation Sans</string></edit>
+  </match>
+  <!-- Helvetica Neue: map to Liberation Sans -->
+  <match target="pattern">
+    <test name="family"><string>Helvetica Neue</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>Liberation Sans</string></edit>
+  </match>
+</fontconfig>
+FONTCONF
+RUN fc-cache -f
 
 # ============================================
 # Layer 2: Install Microsoft Edge

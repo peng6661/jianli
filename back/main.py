@@ -123,38 +123,6 @@ class HealthResponse(BaseModel):
 
 
 # ============================================
-# Shared CSS overrides
-# ============================================
-# Font override: --ant-font uses macOS/Windows fonts that don't exist
-# in the Docker container. Replace with Liberation Sans (Arial-compatible
-# metrics) + WenQuanYi Zen Hei (CJK). This makes Edge render closer to
-# what the user sees in their browser.
-# Also remove preview-only visual styles (border, shadow, rounded corners).
-_PDF_OVERRIDE_CSS = """
-:root {
-    --ant-font: 'Liberation Sans', 'WenQuanYi Zen Hei', 'DejaVu Sans', sans-serif !important;
-}
-body, .resume-paper, .paginated-page {
-    font-family: 'Liberation Sans', 'WenQuanYi Zen Hei', 'DejaVu Sans', sans-serif !important;
-}
-.resume-paper {
-    border: none !important;
-    box-shadow: none !important;
-    border-radius: 0 !important;
-}
-body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-"""
-
-
-def _inject_css(html: str, css: str) -> str:
-    """Inject a <style> block at the end of <head>."""
-    style_tag = f"<style>{css}</style>"
-    if "</head>" in html:
-        return html.replace("</head>", f"{style_tag}</head>", 1)
-    return style_tag + html
-
-
-# ============================================
 # Edge PDF conversion
 # ============================================
 def _convert_with_edge(html: str, filename: str) -> bytes:
@@ -283,12 +251,12 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
     Edge produces PDFs matching the browser preview exactly because it uses
     the same rendering engine. The frontend's embedded JS re-measures content
     height and sets @page size, which Edge executes correctly.
-    """
-    # Inject font override CSS (makes Docker fonts match Arial metrics,
-    # producing layout closer to browser preview)
-    html_styled = _inject_css(html, _PDF_OVERRIDE_CSS)
 
-    return _convert_with_edge(html_styled, filename)
+    No CSS injection — the HTML from the frontend goes directly to Edge,
+    same as the local Windows deployment. Font fallback is handled naturally
+    by fontconfig (Arial → Liberation Sans, CJK → WenQuanYi Zen Hei).
+    """
+    return _convert_with_edge(html, filename)
 
 
 # ============================================
