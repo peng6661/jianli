@@ -19,53 +19,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gnupg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create custom fonts directory (mounted at runtime via docker-compose)
+# Create custom fonts directory and copy built-in fonts
 RUN mkdir -p /usr/share/fonts/custom
+COPY fonts/ /usr/share/fonts/custom/
 
 # Fontconfig:
-# 1) SimSun/宋体 priority: if mounted simsun.ttc exists, use it FIRST for
-#    SimSun / 宋体 / Songti SC / STSong families, then fall back to others.
-#    Uses "prepend" instead of "assign" — if SimSun is not installed, matching
-#    continues naturally to the next available CJK font.
-# 2) Generic serif family: prepend SimSun so CSS requests for serif CJK text
-#    render with the proper Songti-style font.
-# 3) Arial / Helvetica Neue → Liberation Sans (matches browser behaviour).
-# 4) Generic sans-serif falls back to WenQuanYi Zen Hei for CJK coverage.
+# 1) Microsoft YaHei / 微软雅黑: built-in msyh.ttc takes priority.
+#    This is the PRIMARY font for resume content (sans-serif / heiti design).
+# 2) Generic sans-serif: prepend Microsoft YaHei for CJK heiti rendering.
+#    Falls back to WenQuanYi Zen Hei if YaHei is unavailable.
+# 3) Generic serif: falls back to Microsoft YaHei / WenQuanYi for CJK.
+# 4) Arial / Helvetica Neue → Liberation Sans (matches browser behaviour).
 RUN cat > /etc/fonts/local.conf << 'FONTCONF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-  <!-- Custom fonts dir (mounted via volume, scanned again at startup) -->
+  <!-- Custom fonts dir (built-in fonts + optional volume mounts) -->
   <dir>/usr/share/fonts/custom</dir>
 
-  <!-- ===== Songti / SimSun aliases: prepend SimSun so mounted font wins ===== -->
+  <!-- ===== Microsoft YaHei / 微软雅黑: prepend so built-in msyh.ttc wins ===== -->
   <match target="pattern">
-    <test name="family"><string>SimSun</string></test>
-    <edit name="family" mode="prepend" binding="strong"><string>SimSun</string></edit>
+    <test name="family"><string>Microsoft YaHei</string></test>
+    <edit name="family" mode="prepend" binding="strong"><string>Microsoft YaHei</string></edit>
   </match>
   <match target="pattern">
-    <test name="family"><string>宋体</string></test>
-    <edit name="family" mode="prepend_first" binding="strong"><string>SimSun</string></edit>
-  </match>
-  <match target="pattern">
-    <test name="family"><string>Songti SC</string></test>
-    <edit name="family" mode="prepend_first" binding="strong"><string>SimSun</string></edit>
-  </match>
-  <match target="pattern">
-    <test name="family"><string>STSong</string></test>
-    <edit name="family" mode="prepend_first" binding="strong"><string>SimSun</string></edit>
+    <test name="family"><string>微软雅黑</string></test>
+    <edit name="family" mode="prepend_first" binding="strong"><string>Microsoft YaHei</string></edit>
   </match>
 
-  <!-- ===== Generic serif: prepend SimSun for CJK Songti-style rendering ===== -->
+  <!-- ===== Generic sans-serif: prepend Microsoft YaHei for CJK heiti-style rendering ===== -->
   <match target="pattern">
-    <test name="family"><string>serif</string></test>
-    <edit name="family" mode="prepend" binding="weak"><string>SimSun</string></edit>
+    <test name="family"><string>sans-serif</string></test>
+    <edit name="family" mode="prepend" binding="weak"><string>Microsoft YaHei</string></edit>
     <edit name="family" mode="append" binding="weak"><string>WenQuanYi Zen Hei</string></edit>
   </match>
 
-  <!-- ===== Sans-serif: Liberation Sans first, then CJK fallback ===== -->
+  <!-- ===== Generic serif: fall back to heiti fonts for CJK ===== -->
   <match target="pattern">
-    <test name="family"><string>sans-serif</string></test>
+    <test name="family"><string>serif</string></test>
+    <edit name="family" mode="append" binding="weak"><string>Microsoft YaHei</string></edit>
     <edit name="family" mode="append" binding="weak"><string>WenQuanYi Zen Hei</string></edit>
   </match>
 

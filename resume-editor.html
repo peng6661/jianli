@@ -24,11 +24,12 @@
             --ant-border: rgba(5,5,5,0.06);
             --ant-border-color: #d9d9d9;
             --ant-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
-            /* ===== 简历内容专用字体栈：宋体优先（PDF 导出与服务器 simsun.ttc 匹配） ===== */
-            /*   - Windows/macOS 本地预览：直接命中系统 SimSun / 宋体 / Songti SC / STSong */
-            /*   - Linux 服务器 Edge：通过 fontconfig prepend 规则命中挂载的 simsun.ttc */
-            /*   - 兜底顺序：Serif CJK(Noto/WenQuanYi) → 通用 serif，保证任何环境都有衬线体可用 */
-            --rp-content-font: SimSun, '宋体', 'Songti SC', STSong, 'Noto Serif CJK SC', 'WenQuanYi Zen Hei', serif;
+            /* ===== 简历内容专用字体栈：黑体/无衬线优先（与本地部署版保持一致） ===== */
+            /*   - Windows：Microsoft YaHei（微软雅黑，系统默认黑体）*/
+            /*   - macOS：PingFang SC（苹方，系统默认黑体）*/
+            /*   - Linux：WenQuanYi Zen Hei（文泉驿正黑，Docker 已预装）*/
+            /*   - 兜底：Noto Sans CJK SC → 通用 sans-serif */
+            --rp-content-font: 'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif;
             --header-h: 64px;
         }
         * { box-sizing: border-box; }
@@ -4510,15 +4511,15 @@
                 baseCSS += s.innerHTML + '\n';
             });
 
-            // 导出专有覆盖：确保分页裁剪 + 宋体渲染生效
-            var simsunFontStack = "SimSun, '宋体', 'Songti SC', STSong, 'Noto Serif CJK SC', 'WenQuanYi Zen Hei', serif";
+            // 导出专有覆盖：确保分页裁剪 + 黑体渲染生效
+            var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
             var overrideCSS = [
                 pageSizeRule,
                 'html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
-                // ★ PDF 导出强制使用宋体栈（html/body 设基础字体，resume-paper/paginated-page 加固）
-                'html, body { margin: 0; padding: 0; background: #fff; font-family: ' + simsunFontStack + ' !important; }',
+                // ★ PDF 导出强制使用黑体栈（html/body 设基础字体，resume-paper/paginated-page 加固）
+                'html, body { margin: 0; padding: 0; background: #fff; font-family: ' + heitiFontStack + ' !important; }',
                 '.paginated-page { overflow: hidden; height: 297mm !important; border: none !important; outline: none !important; }',
-                '.resume-paper, .paginated-page { font-family: ' + simsunFontStack + ' !important; }',
+                '.resume-paper, .paginated-page { font-family: ' + heitiFontStack + ' !important; }',
                 '.resume-paper *, .paginated-page * { font-family: inherit !important; }',
                 viewMode !== 'paginated' ? '.resume-paper { min-height: 0 !important; padding-bottom: 6px !important; }' : '',
                 viewMode === 'paginated' ? '.rp-section { page-break-inside: avoid; break-inside: avoid; }' : '',
@@ -4531,8 +4532,8 @@
             if (viewMode === 'paginated' && pageContents.length > 0) {
                 bodyHtml = pageContents.join('\n');
             } else {
-                // 连续视图：给内联 paper 也加上宋体 font-family（第三重保险）
-                var contentStyle = 'padding:' + paper.style.padding + ';line-height:' + paper.style.lineHeight + ';font-size:' + paper.style.fontSize + ';font-family:' + simsunFontStack + ';';
+                // 连续视图：给内联 paper 也加上黑体 font-family（第三重保险）
+                var contentStyle = 'padding:' + paper.style.padding + ';line-height:' + paper.style.lineHeight + ';font-size:' + paper.style.fontSize + ';font-family:' + heitiFontStack + ';';
                 bodyHtml = '<div class="resume-paper" style="' + contentStyle + '">' + paper.innerHTML + '</div>';
             }
 
@@ -4614,14 +4615,14 @@
         /** 回退方案 — 在新窗口中展示简历内容（用户可自行打印或另存为 PDF） */
         function fallbackPrintExport(html, title) {
             var pw = window.open('', '_blank');
-            var simsunFontStack = "SimSun, '宋体', 'Songti SC', STSong, 'Noto Serif CJK SC', 'WenQuanYi Zen Hei', serif";
+            var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
             var centeredHtml = html.replace(
                 '</head>',
                 '<style>' +
                 '  body { text-align: center; margin: 0; padding: 20px 0; background: #f0f2f5; }' +
                 '  .resume-paper, .paginated-page { display: block; margin: 0 auto 20px auto; text-align: left; }' +
                 '  .paginated-page { outline: 2px solid #d0d5dd !important; outline-offset: -2px !important; box-shadow: 0 4px 16px rgba(0,0,0,0.10) !important; }' +
-                '  .resume-paper, .paginated-page { font-family: ' + simsunFontStack + ' !important; }' +
+                '  .resume-paper, .paginated-page { font-family: ' + heitiFontStack + ' !important; }' +
                 '  .resume-paper *, .paginated-page * { font-family: inherit !important; }' +
                 '</style></head>'
             );
@@ -5160,12 +5161,12 @@
                 bodyHtml = '<div class="resume-paper">' + paper.innerHTML + '</div>';
             }
 
-            var simsunFontStack = "SimSun, '宋体', 'Songti SC', STSong, 'Noto Serif CJK SC', 'WenQuanYi Zen Hei', serif";
+            var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
             var overrideCSS = viewMode === 'paginated'
                 ? '.paginated-page { outline: 2px solid #d0d5dd !important; outline-offset: -2px !important; box-shadow: 0 4px 16px rgba(0,0,0,0.10) !important; }'
                 : '.resume-paper{box-shadow:0 4px 20px rgba(0,0,0,0.10);border-radius:2px;}';
-            // 浏览器预览也强制使用宋体栈，与 PDF 导出保持一致
-            overrideCSS += '.resume-paper,.paginated-page{font-family:' + simsunFontStack + ' !important}.resume-paper *,.paginated-page *{font-family:inherit !important}';
+            // 浏览器预览也强制使用黑体栈，与 PDF 导出保持一致
+            overrideCSS += '.resume-paper,.paginated-page{font-family:' + heitiFontStack + ' !important}.resume-paper *,.paginated-page *{font-family:inherit !important}';
 
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + title + '</title><style>' + baseCSS + 'body{margin:0;padding:20px;background:#f0f2f5;text-align:center}.resume-paper,.paginated-page{display:block;margin:0 auto 20px auto;text-align:left;}' + overrideCSS + '</style></head><body>' + bodyHtml + '</body></html>';
             var pw = window.open('', '_blank');

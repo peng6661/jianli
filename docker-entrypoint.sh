@@ -8,18 +8,17 @@ echo "========================================"
 echo ""
 
 # ============================================
-# 0. Refresh fontconfig cache (re-scan mounted /usr/share/fonts/custom)
-#    fc-cache was already run during docker build, but fonts/custom is mounted
-#    at runtime (volume), so we must re-scan now. Otherwise SimSun alias matches
-#    won't resolve the mounted simsun.ttc until fc-cache runs again.
+# 0. Refresh fontconfig cache (re-scan built-in /usr/share/fonts/custom)
+#    fc-cache was run during docker build, but Edge may need a refresh.
+#    Microsoft YaHei (msyh.ttc) is the primary font for resume content.
 # ============================================
-echo "[0/5] Refreshing font cache (scanning mounted fonts)..."
+echo "[0/5] Refreshing font cache (scanning built-in fonts)..."
 if [ -d /usr/share/fonts/custom ] && [ -n "$(ls -A /usr/share/fonts/custom 2>/dev/null)" ]; then
     fc-cache -f /usr/share/fonts/custom 2>&1 || true
-    echo "  Custom fonts found:"
-    fc-list | grep -i "SimSun\|simsun\|宋体" | head -5 || echo "  (SimSun not detected in fc-list — check fonts mount)"
+    echo "  Primary font (heiti):"
+    fc-list | grep -i "Microsoft YaHei\|微软雅黑" | head -5 || echo "  (Microsoft YaHei not detected)"
 else
-    echo "  No custom fonts mounted (/usr/share/fonts/custom empty)."
+    echo "  No custom fonts found (/usr/share/fonts/custom empty)."
     echo "  Using system fallback fonts (WenQuanYi / Liberation)."
 fi
 echo ""
