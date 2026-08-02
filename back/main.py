@@ -13,15 +13,19 @@ to provide Edge with enough virtual memory on resource-constrained servers.
 import os
 import sys
 import time
+import json
 import signal
+import base64
 import shutil
 import logging
 import tempfile
 import subprocess
 import asyncio
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import websockets
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -149,6 +153,7 @@ class PdfExportRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     engine: str
+    mode: str = "subprocess"
     edge_available: bool = False
     edge_version: Optional[str] = None
 
@@ -188,22 +193,311 @@ def cleanup_edge_temp_files():
 
 
 # ============================================
-# Edge PDF conversion
+# Persistent Edge Browser (CDP via WebSocket)
 # ============================================
-def _convert_with_edge(html: str, filename: str) -> bytes:
-    """Convert HTML to PDF using Edge headless.
+class EdgeCDPClient:
+    """Persistent Edge browser managed via Chrome DevTools Protocol.
 
-    Uses the same simple flags as the local Windows deployment.
-    Edge executes JavaScript, so the frontend's embedded re-measurement
-    script works correctly (measures actual content height, sets @page size).
+    Edge stays alive across requests — eliminates cold-start penalty (~1-2s).
+    Each PDF request creates a new CDP target, navigates to the HTML, calls
+    Page.printToPDF, then closes the target.
 
-    Each request gets a unique --user-data-dir to avoid concurrent conflicts
-    (Edge holds a file lock on its profile directory). Temp directories are
-    cleaned up in the finally block.
+    Falls back to subprocess mode if CDP is unavailable.
+    """
 
-    Edge runs in its own process session (start_new_session=True). On timeout,
-    the entire process group is killed via os.killpg() — this ensures all Edge
-    child processes (renderer, GPU, utility) are terminated, not just the parent.
+    def __init__(self, edge_path: str, debug_port: int = 9222):
+        self.edge_path = edge_path
+        self.debug_port = debug_port
+        self.process: Optional[subprocess.Popen] = None
+        self._msg_id = 0
+        self._ready = False
+
+    # ---- Edge lifecycle ----
+
+    def start(self):
+        """Launch Edge in headless mode with remote debugging enabled."""
+        if self._ready:
+            return
+
+        # Ensure port is free (kill any stale Edge on this port)
+        self._kill_stale()
+
+        user_data_dir = tempfile.mkdtemp(prefix="edge-persist-")
+        cmd = [
+            self.edge_path,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-crash-reporter",
+            "--disable-background-networking",
+            "--disable-component-update",
+            f"--user-data-dir={user_data_dir}",
+            f"--remote-debugging-port={self.debug_port}",
+            "about:blank",  # Keep a blank page open
+        ]
+
+        env = os.environ.copy()
+        env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
+
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+
+        # Wait for debug port to be ready (retry up to 10s)
+        for _ in range(40):
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.debug_port}/json/version",
+                    timeout=1,
+                )
+                self._ready = True
+                log.info("[CDP] Edge browser ready on port %d (pid=%d)",
+                         self.debug_port, self.process.pid)
+                return
+            except Exception:
+                time.sleep(0.25)
+            if self.process.poll() is not None:
+                raise RuntimeError(
+                    f"Edge exited prematurely (code={self.process.returncode})"
+                )
+
+        raise RuntimeError("Edge did not start within 10 seconds")
+
+    def _kill_stale(self):
+        """Kill any process holding the debug port."""
+        try:
+            result = subprocess.run(
+                ["fuser", f"{self.debug_port}/tcp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split()
+                for pid in pids:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+        except Exception:
+            pass
+
+    def _get_ws_url(self) -> str:
+        """Get the browser WebSocket debugger URL."""
+        try:
+            resp = urllib.request.urlopen(
+                f"http://127.0.0.1:{self.debug_port}/json/version",
+                timeout=5,
+            )
+            data = json.loads(resp.read().decode())
+            return data["webSocketDebuggerUrl"]
+        except Exception as e:
+            raise RuntimeError(f"Failed to get CDP WebSocket URL: {e}")
+
+    def ensure_alive(self):
+        """Check if Edge is still running; restart if crashed."""
+        if self.process is None or self.process.poll() is not None:
+            log.warning("[CDP] Edge process died, restarting...")
+            self._ready = False
+            self.start()
+            return
+        # Quick health check
+        try:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{self.debug_port}/json/version",
+                timeout=2,
+            )
+        except Exception:
+            log.warning("[CDP] Edge unresponsive, restarting...")
+            self._ready = False
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            self.start()
+
+    def close(self):
+        """Shut down Edge."""
+        if self.process and self.process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            self.process.wait()
+        self._ready = False
+
+    # ---- PDF generation via CDP ----
+
+    async def generate_pdf(self, html: str, filename: str) -> bytes:
+        """Generate PDF using CDP Page.printToPDF.
+
+        Flow:
+        1. Connect to browser WebSocket
+        2. Create a new tab (Target.createTarget)
+        3. Navigate to data: URI (Page.navigate)
+        4. Wait for page load (Page.loadEventFired)
+        5. Call Page.printToPDF → base64-encoded PDF
+        6. Close the tab (Target.closeTarget)
+        """
+        self.ensure_alive()
+        ws_url = self._get_ws_url()
+
+        log.info("[CDP] Generating PDF: %s", filename)
+
+        try:
+            async with websockets.connect(
+                ws_url,
+                max_size=10 * 1024 * 1024,  # 10MB (PDFs can be large)
+                ping_interval=None,
+                close_timeout=5,
+            ) as ws:
+                # 1. Create a new target (tab)
+                target_id = await self._cdp_call(ws, "Target.createTarget", {
+                    "url": "about:blank",
+                    "newWindow": False,
+                })
+                target_id = target_id["targetId"]
+
+                # 2. Attach to the target to get a session
+                session = await self._cdp_call(ws, "Target.attachToTarget", {
+                    "targetId": target_id,
+                    "flatten": True,
+                })
+                session_id = session["sessionId"]
+
+                try:
+                    # 3. Enable Page domain
+                    await self._cdp_call(ws, "Page.enable", {},
+                                         session_id)
+
+                    # 4. Navigate to the HTML via data: URI
+                    html_b64 = base64.b64encode(html.encode("utf-8")).decode()
+                    data_url = f"data:text/html;base64,{html_b64}"
+
+                    # Set up load event promise BEFORE navigating
+                    load_promise = self._wait_for_event(
+                        ws, "Page.loadEventFired", session_id, timeout=15
+                    )
+
+                    nav_result = await self._cdp_call(ws, "Page.navigate", {
+                        "url": data_url,
+                    }, session_id)
+
+                    if nav_result.get("errorText"):
+                        raise RuntimeError(
+                            f"Page navigation failed: {nav_result['errorText']}"
+                        )
+
+                    # 5. Wait for page to fully load
+                    await load_promise
+
+                    # 6. Generate PDF
+                    pdf_result = await self._cdp_call(
+                        ws, "Page.printToPDF", {
+                            "printBackground": True,
+                            "preferCSSPageSize": True,
+                            "displayHeaderFooter": False,
+                            "transferMode": "ReturnAsBase64",
+                        },
+                        session_id,
+                        timeout=30,
+                    )
+
+                    pdf_bytes = base64.b64decode(pdf_result["data"])
+                    log.info("[CDP] PDF generated: %d bytes", len(pdf_bytes))
+                    return pdf_bytes
+
+                finally:
+                    # Close the target (best-effort)
+                    try:
+                        await self._cdp_call(ws, "Target.closeTarget", {
+                            "targetId": target_id,
+                        }, timeout=3)
+                    except Exception:
+                        pass
+
+        except Exception:
+            log.error("[CDP] Failed, falling back to subprocess mode", exc_info=True)
+            # Fall back to the old subprocess approach
+            return _convert_with_edge_subprocess(html, filename)
+
+    # ---- CDP helpers ----
+
+    def _next_id(self) -> int:
+        self._msg_id += 1
+        return self._msg_id
+
+    async def _cdp_call(self, ws, method: str, params: dict = None,
+                        session_id: str = None, timeout: int = 15) -> dict:
+        """Send a CDP command and return the result."""
+        msg_id = self._next_id()
+        msg = {"id": msg_id, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        await ws.send(json.dumps(msg))
+
+        # Read responses until we get the matching id
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"CDP timeout: {method}")
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=min(remaining, 5))
+            except asyncio.TimeoutError:
+                continue
+            resp = json.loads(raw)
+            if resp.get("id") == msg_id:
+                if "error" in resp:
+                    raise RuntimeError(
+                        f"CDP error: {resp['error'].get('message', resp['error'])}"
+                    )
+                return resp.get("result", {})
+            # else: event or response for a different command — skip
+
+        raise RuntimeError(f"CDP timeout waiting for {method}")
+
+    async def _wait_for_event(self, ws, event_name: str,
+                              session_id: str = None, timeout: int = 15) -> dict:
+        """Wait for a specific CDP event."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"Timeout waiting for {event_name}")
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=min(remaining, 5))
+            except asyncio.TimeoutError:
+                continue
+            resp = json.loads(raw)
+            if (resp.get("method") == event_name and
+                (session_id is None or resp.get("sessionId") == session_id)):
+                return resp.get("params", {})
+        raise RuntimeError(f"Timeout waiting for {event_name}")
+
+
+# Global CDP client instance (initialized on startup)
+_edge_cdp: Optional[EdgeCDPClient] = None
+
+
+# ============================================
+# Edge PDF conversion (subprocess fallback)
+# ============================================
+def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
+    """[FALLBACK] Convert HTML to PDF using a one-shot Edge subprocess.
+
+    Used only when the persistent CDP browser is unavailable.
+    Each call launches a fresh Edge process, generates PDF, then exits.
     """
     if not EDGE_PATH:
         raise RuntimeError("Edge binary not found")
@@ -340,18 +634,23 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
 # ============================================
 # Main conversion function
 # ============================================
-def convert_html_to_pdf(html: str, filename: str) -> bytes:
-    """Convert HTML to PDF using Edge (Blink engine).
+async def convert_html_to_pdf(html: str, filename: str) -> bytes:
+    """Convert HTML to PDF using persistent Edge via CDP.
 
-    Edge produces PDFs matching the browser preview exactly because it uses
-    the same rendering engine. The frontend's embedded JS re-measures content
-    height and sets @page size, which Edge executes correctly.
-
-    No CSS injection — the HTML from the frontend goes directly to Edge,
-    same as the local Windows deployment. Font fallback is handled naturally
-    by fontconfig (Arial → Liberation Sans, CJK → WenQuanYi Zen Hei).
+    Uses the CDP-based persistent browser for fast PDF generation
+    (no cold start). Falls back to subprocess mode if CDP is unavailable.
     """
-    return _convert_with_edge(html, filename)
+    global _edge_cdp
+    if _edge_cdp is not None:
+        try:
+            return await _edge_cdp.generate_pdf(html, filename)
+        except Exception:
+            log.error("[CDP] Failed, falling back to subprocess", exc_info=True)
+    # Fallback: one-shot subprocess
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _convert_with_edge_subprocess, html, filename
+    )
 
 
 # ============================================
@@ -359,18 +658,20 @@ def convert_html_to_pdf(html: str, filename: str) -> bytes:
 # ============================================
 @app.get("/api/health", response_model=HealthResponse)
 def health_check():
-    """Health check - report Edge availability."""
+    """Health check - report Edge availability and CDP status."""
     edge_ver = get_edge_version() if EDGE_PATH else None
+    cdp_ready = _edge_cdp is not None and _edge_cdp._ready
     return HealthResponse(
-        status="ok" if EDGE_PATH else "degraded",
+        status="ok" if (EDGE_PATH and cdp_ready) else ("degraded" if EDGE_PATH else "unavailable"),
         engine="edge" if EDGE_PATH else "none",
+        mode="cdp" if cdp_ready else "subprocess",
         edge_available=bool(EDGE_PATH),
         edge_version=edge_ver,
     )
 
 
 @app.get("/api/test-pdf")
-def test_pdf():
+async def test_pdf():
     """Test PDF generation with Edge."""
     test_html = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
@@ -384,10 +685,11 @@ def test_pdf():
 
     try:
         if EDGE_PATH:
-            pdf_bytes = _convert_with_edge(test_html, "test")
+            pdf_bytes = await convert_html_to_pdf(test_html, "test")
             return {
                 "status": "ok",
                 "engine": "edge",
+                "mode": "cdp" if (_edge_cdp and _edge_cdp._ready) else "subprocess",
                 "edge_version": get_edge_version(),
                 "pdf_size": len(pdf_bytes),
             }
@@ -512,11 +814,8 @@ def test_edge_alias():
 async def export_pdf(request: PdfExportRequest):
     """Convert HTML to PDF and return as download.
 
+    Uses persistent Edge via CDP for fast generation (no cold start).
     Concurrency is controlled by a semaphore (MAX_CONCURRENT_PDFS).
-    When the limit is reached, additional requests queue and wait
-    instead of spawning more Edge processes (which would cause OOM).
-    The blocking Edge subprocess runs in a thread executor so the
-    async event loop stays responsive.
     """
     html = request.html
     filename = request.filename
@@ -530,14 +829,11 @@ async def export_pdf(request: PdfExportRequest):
             detail="PDF export service not ready (Edge not available)",
         )
 
-    # Acquire semaphore — limits concurrent Edge processes
+    # Acquire semaphore — limits concurrent CDP operations
     sem = _get_semaphore()
     async with sem:
-        loop = asyncio.get_event_loop()
         try:
-            pdf_bytes = await loop.run_in_executor(
-                None, convert_html_to_pdf, html, filename
-            )
+            pdf_bytes = await convert_html_to_pdf(html, filename)
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -567,6 +863,18 @@ if __name__ == "__main__":
     # One-time cleanup of leftover temp files from previous container runs
     cleanup_edge_temp_files()
 
+    # Pre-launch persistent Edge browser (CDP mode)
+    if EDGE_PATH:
+        try:
+            _edge_cdp = EdgeCDPClient(EDGE_PATH, debug_port=9222)
+            _edge_cdp.start()
+            log.info("Edge CDP browser pre-launched — PDF requests will be fast!")
+        except Exception as e:
+            log.warning("CDP pre-launch failed, will use subprocess fallback: %s", e)
+            _edge_cdp = None
+    else:
+        _edge_cdp = None
+
     print("=" * 50)
     print("  Resume Editor PDF Service (Cloud Edition)")
     print("=" * 50)
@@ -576,15 +884,20 @@ if __name__ == "__main__":
     print(f"  Export:    POST http://{host}:{port}/api/export-pdf")
     print(f"  Test:      GET http://{host}:{port}/api/test-pdf")
     print(f"  CORS:      {_allowed_origins}")
-    print(f"  Concurrency: max {MAX_CONCURRENT_PDFS} parallel Edge processes")
-    print(f"  Edge budget: {EDGE_VIRTUAL_TIME_BUDGET}ms | timeout: {EDGE_TIMEOUT}s")
+    print(f"  Engine:    {'CDP (persistent)' if (_edge_cdp and _edge_cdp._ready) else 'Subprocess (one-shot)'}")
+    print(f"  Concurrency: max {MAX_CONCURRENT_PDFS} parallel requests")
     print()
     if EDGE_PATH:
-        print(f"  Engine:    Edge ({get_edge_version() or 'version unknown'})")
+        print(f"  Edge:      {get_edge_version() or 'version unknown'}")
     else:
-        print("  Engine:    Edge (NOT FOUND)")
+        print("  Edge:      NOT FOUND")
     print()
     print("  Press Ctrl+C to stop")
     print()
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        if _edge_cdp:
+            log.info("Shutting down Edge CDP browser...")
+            _edge_cdp.close()
