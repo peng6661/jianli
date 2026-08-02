@@ -17,6 +17,7 @@ import shutil
 import logging
 import tempfile
 import subprocess
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -92,8 +93,35 @@ def get_edge_version() -> Optional[str]:
 app = FastAPI(
     title="Resume Editor PDF Service",
     description="Edge headless PDF conversion (Blink = same as browser preview)",
-    version="7.0.0",
+    version="7.1.0",
 )
+
+# ============================================
+# Concurrency control
+# ============================================
+# Edge multi-process mode uses ~100-150 MB per request.
+# Server has ~435 MB RAM + 512 MB swap. Limit concurrent Edge
+# instances to avoid OOM kills. Override via env var if needed.
+MAX_CONCURRENT_PDFS = int(os.environ.get("MAX_CONCURRENT_PDFS", "2"))
+
+# Virtual time budget for Edge (ms). Controls how long Edge fast-forwards
+# time for async operations (image loading, JS timers). 5s is sufficient
+# for typical resume pages. Override via env var.
+EDGE_VIRTUAL_TIME_BUDGET = int(os.environ.get("EDGE_VIRTUAL_TIME_BUDGET", "5000"))
+
+# Per-request timeout (seconds). Edge should finish well within this.
+EDGE_TIMEOUT = int(os.environ.get("EDGE_TIMEOUT", "60"))
+
+# Semaphore — initialised lazily (asyncio.Semaphore needs a running loop)
+_pdf_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Get or lazily create the concurrency semaphore."""
+    global _pdf_semaphore
+    if _pdf_semaphore is None:
+        _pdf_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PDFS)
+    return _pdf_semaphore
 
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 _allowed_origins = [o.strip() for o in _allowed_origins if o.strip()]
@@ -132,14 +160,16 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
     Edge executes JavaScript, so the frontend's embedded re-measurement
     script works correctly (measures actual content height, sets @page size).
 
-    With 2GB swap (created at container startup), Edge has enough virtual
-    memory to run in normal multi-process mode.
+    Each request gets a unique --user-data-dir to avoid concurrent conflicts
+    (Edge holds a file lock on its profile directory). Temp directories are
+    cleaned up in the finally block.
     """
     if not EDGE_PATH:
         raise RuntimeError("Edge binary not found")
 
     temp_html = None
     temp_pdf = None
+    user_data_dir = None
 
     try:
         # Write HTML to temp file
@@ -155,9 +185,13 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
         if Path(temp_pdf).exists():
             Path(temp_pdf).unlink()
 
+        # Unique user-data-dir per request — prevents file-lock conflicts
+        # when multiple Edge instances run concurrently.
+        user_data_dir = tempfile.mkdtemp(prefix="edge-profile-")
+
         # Build command — same simple flags as local Windows version
         # --headless=new: required for --print-to-pdf
-        # --virtual-time-budget=10000: fast-forwards time so images load
+        # --virtual-time-budget: fast-forwards time so images load
         # --disable-dev-shm-usage: use /tmp instead of /dev/shm
         # No --single-process, no --no-zygote — normal multi-process mode
         # works fine with swap providing virtual memory.
@@ -176,14 +210,14 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
-            "--user-data-dir=/tmp/edge-pdf-profile",
-            "--virtual-time-budget=10000",
+            f"--user-data-dir={user_data_dir}",
+            f"--virtual-time-budget={EDGE_VIRTUAL_TIME_BUDGET}",
             "--print-to-pdf-no-header",
             f"--print-to-pdf={temp_pdf}",
             Path(temp_html).absolute().as_uri(),
         ]
 
-        log.info("[Edge] Generating PDF: %s", filename)
+        log.info("[Edge] Generating PDF: %s (budget=%dms)", filename, EDGE_VIRTUAL_TIME_BUDGET)
 
         # Set up environment with D-Bus addresses
         env = os.environ.copy()
@@ -199,7 +233,7 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
         )
 
         try:
-            stdout_data, _ = process.communicate(timeout=60)
+            stdout_data, _ = process.communicate(timeout=EDGE_TIMEOUT)
         except subprocess.TimeoutExpired:
             # Capture partial output before killing
             try:
@@ -214,8 +248,8 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
                 log.warning("[Edge] Process timed out but PDF was created")
             else:
                 partial = stdout_data[:2000].decode("utf-8", errors="replace") if stdout_data else "(no output)"
-                log.error("[Edge] Timeout. Partial output:\n%s", partial)
-                raise RuntimeError(f"Edge timed out (60s), no PDF generated. Output: {partial[:500]}")
+                log.error("[Edge] Timeout (%ds). Partial output:\n%s", EDGE_TIMEOUT, partial)
+                raise RuntimeError(f"Edge timed out ({EDGE_TIMEOUT}s), no PDF generated. Output: {partial[:500]}")
 
         exit_code = process.returncode
 
@@ -233,13 +267,20 @@ def _convert_with_edge(html: str, filename: str) -> bytes:
         )
 
     finally:
-        # Clean up temp files
+        # Clean up temp HTML and PDF files
         for path in [temp_html, temp_pdf]:
             if path and Path(path).exists():
                 try:
                     Path(path).unlink()
                 except Exception:
                     pass
+
+        # Clean up user-data-dir (can be large, contains Edge profile data)
+        if user_data_dir and Path(user_data_dir).exists():
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 # ============================================
@@ -415,7 +456,14 @@ def test_edge_alias():
 
 @app.post("/api/export-pdf")
 async def export_pdf(request: PdfExportRequest):
-    """Convert HTML to PDF and return as download."""
+    """Convert HTML to PDF and return as download.
+
+    Concurrency is controlled by a semaphore (MAX_CONCURRENT_PDFS).
+    When the limit is reached, additional requests queue and wait
+    instead of spawning more Edge processes (which would cause OOM).
+    The blocking Edge subprocess runs in a thread executor so the
+    async event loop stays responsive.
+    """
     html = request.html
     filename = request.filename
 
@@ -428,10 +476,16 @@ async def export_pdf(request: PdfExportRequest):
             detail="PDF export service not ready (Edge not available)",
         )
 
-    try:
-        pdf_bytes = convert_html_to_pdf(html, filename)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Acquire semaphore — limits concurrent Edge processes
+    sem = _get_semaphore()
+    async with sem:
+        loop = asyncio.get_event_loop()
+        try:
+            pdf_bytes = await loop.run_in_executor(
+                None, convert_html_to_pdf, html, filename
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     encoded_filename = filename.encode("utf-8")
     percent_encoded = "".join(f"%{b:02X}" for b in encoded_filename)
@@ -460,16 +514,18 @@ if __name__ == "__main__":
     print("  Resume Editor PDF Service (Cloud Edition)")
     print("=" * 50)
     print()
-    print(f"  API:      http://{host}:{port}")
-    print(f"  Health:   http://{host}:{port}/api/health")
-    print(f"  Export:   POST http://{host}:{port}/api/export-pdf")
-    print(f"  Test:     GET http://{host}:{port}/api/test-pdf")
-    print(f"  CORS:     {_allowed_origins}")
+    print(f"  API:       http://{host}:{port}")
+    print(f"  Health:    http://{host}:{port}/api/health")
+    print(f"  Export:    POST http://{host}:{port}/api/export-pdf")
+    print(f"  Test:      GET http://{host}:{port}/api/test-pdf")
+    print(f"  CORS:      {_allowed_origins}")
+    print(f"  Concurrency: max {MAX_CONCURRENT_PDFS} parallel Edge processes")
+    print(f"  Edge budget: {EDGE_VIRTUAL_TIME_BUDGET}ms | timeout: {EDGE_TIMEOUT}s")
     print()
     if EDGE_PATH:
-        print(f"  Engine:   Edge ({get_edge_version() or 'version unknown'})")
+        print(f"  Engine:    Edge ({get_edge_version() or 'version unknown'})")
     else:
-        print("  Engine:   Edge (NOT FOUND)")
+        print("  Engine:    Edge (NOT FOUND)")
     print()
     print("  Press Ctrl+C to stop")
     print()

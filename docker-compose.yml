@@ -19,6 +19,13 @@ services:
       # CORS: set to your domain in production, e.g. "https://resume.example.com"
       - ALLOWED_ORIGINS=*
       - HOST=0.0.0.0
+      # PDF concurrency: max simultaneous Edge processes (each ~100-150MB)
+      # Server has ~435MB RAM + 512MB swap. 2 = safe, 1 = most conservative
+      - MAX_CONCURRENT_PDFS=2
+      # Edge virtual time budget (ms): how long to wait for images/JS
+      - EDGE_VIRTUAL_TIME_BUDGET=5000
+      # Per-request timeout (seconds)
+      - EDGE_TIMEOUT=60
     volumes:
       # Optional: mount custom fonts for PDF rendering
       # - ./fonts:/usr/share/fonts/custom:ro
