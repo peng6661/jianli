@@ -5347,7 +5347,13 @@
             }
             _editOverlay.addEventListener('mousedown', function(e) { handleOverlayStart(e, e.clientX, e.clientY); });
             _editOverlay.addEventListener('touchstart', function(e) {
-                if (e.touches.length === 1) { e.preventDefault(); handleOverlayStart(e, e.touches[0].clientX, e.touches[0].clientY); }
+                if (e.touches.length === 1) {
+                    // 删除/旋转按钮依赖 click 事件，不能 preventDefault
+                    if (!e.target.closest('.img-delete') && !e.target.closest('.img-rotate')) {
+                        e.preventDefault();
+                    }
+                    handleOverlayStart(e, e.touches[0].clientX, e.touches[0].clientY);
+                }
             }, { passive: false });
         }
         function initImageInteraction(layer) {
