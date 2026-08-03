@@ -298,6 +298,7 @@ class EdgeCDPClient:
             "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
+            "--no-zygote",
             "--disable-dev-shm-usage",
             "--disable-extensions",
             "--disable-sync",
@@ -306,29 +307,31 @@ class EdgeCDPClient:
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
+            "--disable-features=RendererCodeIntegrity",
             f"--user-data-dir={user_data_dir}",
             f"--remote-debugging-port={self.debug_port}",
-            "about:blank",  # Keep a blank page open
+            "about:blank",
         ]
 
         env = os.environ.copy()
         env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
         env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/dbus/system_bus_socket"
 
+        log.info("[CDP] Launching Edge browser (port=%d)...", self.debug_port)
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,  # DEVNULL — avoid pipe buffer deadlock
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             env=env,
             start_new_session=True,
         )
+        log.info("[CDP] Edge process spawned (pid=%d), waiting for debug port...",
+                 self.process.pid)
 
-        # Wait for debug port to be ready (retry up to 30s)
-        # On resource-constrained servers, Edge cold start can take
-        # 15-25 seconds. 30s is a generous upper bound.
+        # Wait for debug port — up to 60s on first launch
         last_error = None
-        for i in range(120):  # 120 × 0.25s = 30s
+        for i in range(240):  # 240 × 0.25s = 60s
             try:
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{self.debug_port}/json/version",
@@ -340,27 +343,20 @@ class EdgeCDPClient:
                 return
             except Exception as e:
                 last_error = e
+                # Log progress every 20 attempts (5 seconds)
+                if i > 0 and i % 20 == 0:
+                    alive = self.process.poll() is None
+                    log.info("[CDP] Still waiting... (attempt=%d, alive=%s, err=%s)",
+                             i + 1, alive, str(e)[:80])
                 time.sleep(0.25)
             if self.process.poll() is not None:
-                # Edge crashed — capture stderr for diagnosis
-                stderr_tail = ""
-                try:
-                    stderr_data = self.process.stderr.read()
-                    if stderr_data:
-                        stderr_tail = stderr_data.decode(
-                            "utf-8", errors="replace"
-                        )[-2000:]
-                except Exception:
-                    pass
                 raise RuntimeError(
-                    f"Edge exited prematurely (code={self.process.returncode}). "
-                    f"stderr: {stderr_tail[:1000]}"
+                    f"Edge exited prematurely (code={self.process.returncode})"
                 )
 
-        # Timed out — check if Edge is still alive
         alive = self.process.poll() is None
         raise RuntimeError(
-            f"Edge did not start within 30 seconds. "
+            f"Edge did not start within 60 seconds. "
             f"(alive={alive}, pid={self.process.pid}) "
             f"Last error: {last_error}"
         )
