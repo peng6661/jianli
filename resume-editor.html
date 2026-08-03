@@ -374,7 +374,6 @@
         .resume-paper {
             width:210mm; min-height:297mm; background:#fff; padding:36px 36px 36px 36px;
             font-family: var(--rp-content-font); color:var(--ant-text); font-size:14px; line-height:1.5;
-            text-rendering: geometricPrecision; -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
             border:1px solid #e5e7eb; box-shadow:0 1px 4px rgba(0,0,0,0.06); border-radius:2px;
             flex-shrink:0; margin:0 auto; box-sizing:border-box; overflow-wrap:anywhere; position:relative;
         }
@@ -4777,7 +4776,6 @@
 
             // 无需重测量 JS — 前端已精确计算 @page 高度
             var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-                + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
                 + '<title>' + title + '</title>'
                 + '<style>' + pdfCSS + '</style>'
                 + '</head><body>'
@@ -4888,7 +4886,6 @@
             // 3. 导出覆盖 CSS（@page / 黑体 / 分页裁剪）
             var overrideCSS = [
                 pageSizeRule,
-                'html { font-size: 16px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; text-rendering: geometricPrecision; }',
                 'html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
                 'html, body { margin: 0; padding: 0; background: #fff; font-family: ' + heitiFontStack + ' !important; }',
                 '.paginated-page { overflow: hidden; height: 297mm !important; border: none !important; outline: none !important; }',
@@ -4906,8 +4903,8 @@
             ':root{--ant-primary:#1677ff;--ant-text:rgba(0,0,0,0.88);--ant-text-secondary:rgba(0,0,0,0.65);--ant-text-tertiary:rgba(0,0,0,0.45);--rp-theme-color:#4080FF;--list-gap:4px;--rp-content-font:"Microsoft YaHei","PingFang SC","WenQuanYi Zen Hei","Noto Sans CJK SC",sans-serif}',
             '*,*::before,*::after{box-sizing:border-box}',
             // Paper containers
-            '.resume-paper{width:210mm;min-height:297mm;background:#fff;padding:36px 36px 36px 36px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;text-rendering:geometricPrecision;-webkit-text-size-adjust:100%;text-size-adjust:100%;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-radius:2px;flex-shrink:0;margin:0 auto;box-sizing:border-box;overflow-wrap:anywhere;position:relative}',
-            '.paginated-page{width:210mm;min-height:297mm;background:#fff;margin:0 auto;padding:36px 36px 36px 36px;border:none;outline:1px solid #e5e7eb;outline-offset:-1px;box-shadow:0 1px 6px rgba(0,0,0,0.12);border-radius:2px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;text-rendering:geometricPrecision;-webkit-text-size-adjust:100%;text-size-adjust:100%;box-sizing:border-box;flex-shrink:0}',
+            '.resume-paper{width:210mm;min-height:297mm;background:#fff;padding:36px 36px 36px 36px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-radius:2px;flex-shrink:0;margin:0 auto;box-sizing:border-box;overflow-wrap:anywhere;position:relative}',
+            '.paginated-page{width:210mm;min-height:297mm;background:#fff;margin:0 auto;padding:36px 36px 36px 36px;border:none;outline:1px solid #e5e7eb;outline-offset:-1px;box-shadow:0 1px 6px rgba(0,0,0,0.12);border-radius:2px;font-family:var(--rp-content-font);color:var(--ant-text);font-size:14px;line-height:1.5;box-sizing:border-box;flex-shrink:0}',
             '.paginated-page .rp-section{page-break-inside:avoid;break-inside:avoid}',
             // Resume content components
             '.rp-name{font-size:20px;font-weight:700;color:#111;margin-bottom:1px}',
