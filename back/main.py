@@ -162,6 +162,34 @@ def _get_semaphore() -> asyncio.Semaphore:
         _pdf_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PDFS)
     return _pdf_semaphore
 
+
+# ============================================
+# Real-time export progress tracking
+# ============================================
+# In-memory task status dict: task_id → {"stage": str, "pdf_bytes": bytes|None}
+# Frontend polls GET /api/export-status/{task_id} for live stage updates.
+_export_tasks: dict = {}
+_task_counter: int = 0
+
+
+def _set_task_stage(task_id: str, stage: str):
+    """Update the progress stage for a task (thread-safe for dict assignment)."""
+    if task_id and task_id in _export_tasks:
+        _export_tasks[task_id]["stage"] = stage
+
+
+def _cleanup_old_tasks():
+    """Remove completed tasks older than 5 minutes to prevent memory leak."""
+    now = time.monotonic()
+    stale = [
+        tid for tid, t in _export_tasks.items()
+        if t.get("_finished", 0) > 0 and (now - t["_finished"]) > 300
+    ]
+    for tid in stale:
+        _export_tasks.pop(tid, None)
+    if stale:
+        log.debug("[Tasks] Cleaned up %d stale tasks", len(stale))
+
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 _allowed_origins = [o.strip() for o in _allowed_origins if o.strip()]
 
@@ -391,7 +419,8 @@ class EdgeCDPClient:
 
     # ---- PDF generation via CDP ----
 
-    async def generate_pdf(self, html: str, filename: str) -> bytes:
+    async def generate_pdf(self, html: str, filename: str,
+                            task_id: str = None) -> bytes:
         """Generate PDF using CDP Page.printToPDF.
 
         Writes HTML to a temp file and navigates to the file:// URI.
@@ -400,6 +429,7 @@ class EdgeCDPClient:
         and font loading the same way a normal page load does.
         """
         t_start = time.monotonic()
+        _set_task_stage(task_id, "rendering")
         self.ensure_alive()
         ws_url = self._get_ws_url()
 
@@ -461,6 +491,7 @@ class EdgeCDPClient:
                     t_load = time.monotonic()
 
                     # 5. Generate PDF
+                    _set_task_stage(task_id, "generating")
                     pdf_result = await self._cdp_call(
                         ws, "Page.printToPDF", {
                             "printBackground": True,
@@ -708,7 +739,8 @@ def _convert_with_edge_subprocess(html: str, filename: str) -> bytes:
 # ============================================
 # Main conversion function
 # ============================================
-async def convert_html_to_pdf(html: str, filename: str) -> bytes:
+async def convert_html_to_pdf(html: str, filename: str,
+                               task_id: str = None) -> bytes:
     """Convert HTML to PDF using persistent Edge via CDP.
 
     Uses the CDP-based persistent browser for fast PDF generation
@@ -717,14 +749,17 @@ async def convert_html_to_pdf(html: str, filename: str) -> bytes:
     global _edge_cdp
     if _edge_cdp is not None:
         try:
-            return await _edge_cdp.generate_pdf(html, filename)
+            return await _edge_cdp.generate_pdf(html, filename, task_id=task_id)
         except Exception:
             log.error("[CDP] Failed, falling back to subprocess", exc_info=True)
-    # Fallback: one-shot subprocess
+    # Fallback: one-shot subprocess (also updates status internally)
+    _set_task_stage(task_id, "rendering")
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
+    result = await loop.run_in_executor(
         None, _convert_with_edge_subprocess, html, filename
     )
+    _set_task_stage(task_id, "done")
+    return result
 
 
 # ============================================
@@ -886,11 +921,13 @@ def test_edge_alias():
 
 @app.post("/api/export-pdf")
 async def export_pdf(request: PdfExportRequest):
-    """Convert HTML to PDF and return as download.
+    """Start PDF generation and return a task ID for progress polling.
 
-    Uses persistent Edge via CDP for fast generation (no cold start).
-    Concurrency is controlled by a semaphore (MAX_CONCURRENT_PDFS).
+    The frontend polls GET /api/export-status/{task_id} for live stage
+    updates, then fetches the PDF from GET /api/export-download/{task_id}
+    when the stage is "done".
     """
+    global _task_counter
     html = request.html
     filename = request.filename
 
@@ -903,13 +940,66 @@ async def export_pdf(request: PdfExportRequest):
             detail="PDF export service not ready (Edge not available)",
         )
 
-    # Acquire semaphore — limits concurrent CDP operations
-    sem = _get_semaphore()
-    async with sem:
-        try:
-            pdf_bytes = await convert_html_to_pdf(html, filename)
-        except RuntimeError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    _task_counter += 1
+    task_id = str(_task_counter)
+    _export_tasks[task_id] = {"stage": "queued", "filename": filename, "pdf_bytes": None}
+
+    # Clean up old tasks (keep memory in check)
+    _cleanup_old_tasks()
+
+    # Run generation in background — the semaphore gates concurrency
+    asyncio.create_task(_run_export_task(task_id, html, filename))
+
+    return {"task_id": task_id, "stage": "queued"}
+
+
+async def _run_export_task(task_id: str, html: str, filename: str):
+    """Background task: generate PDF and store result in _export_tasks."""
+    try:
+        sem = _get_semaphore()
+        async with sem:
+            pdf_bytes = await convert_html_to_pdf(html, filename, task_id=task_id)
+        _export_tasks[task_id]["pdf_bytes"] = pdf_bytes
+        _export_tasks[task_id]["stage"] = "done"
+    except Exception as e:
+        log.error("[Task %s] Export failed: %s", task_id, str(e), exc_info=True)
+        _export_tasks[task_id]["stage"] = "error"
+        _export_tasks[task_id]["error"] = str(e)
+    finally:
+        _export_tasks[task_id]["_finished"] = time.monotonic()
+
+
+@app.get("/api/export-status/{task_id}")
+def export_status(task_id: str):
+    """Get the current progress stage of a PDF export task.
+
+    Returns {"stage": "queued|rendering|generating|done|error"}.
+    Frontend polls this every ~300ms during export.
+    """
+    task = _export_tasks.get(task_id)
+    if not task:
+        return {"stage": "not_found"}
+    return {"stage": task["stage"]}
+
+
+@app.get("/api/export-download/{task_id}")
+def export_download(task_id: str, request_filename: str = ""):
+    """Download the generated PDF for a completed task.
+
+    Returns the PDF blob. Call only after /api/export-status shows "done".
+    """
+    task = _export_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task["stage"] == "error":
+        raise HTTPException(status_code=500, detail=task.get("error", "Export failed"))
+    if task["stage"] != "done":
+        raise HTTPException(status_code=425, detail="PDF not ready yet")
+    if not task.get("pdf_bytes"):
+        raise HTTPException(status_code=500, detail="PDF data missing")
+
+    pdf_bytes = task["pdf_bytes"]
+    filename = task.get("filename", request_filename or "resume")
 
     encoded_filename = filename.encode("utf-8")
     percent_encoded = "".join(f"%{b:02X}" for b in encoded_filename)
