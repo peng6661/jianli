@@ -423,6 +423,28 @@
         .toast.success { background:#f6ffed; border:1px solid #b7eb8f; color:#52c41a; }
         .toast.info { background:#e6f4ff; border:1px solid #91caff; color:#1677ff; }
 
+        /* PDF导出进度弹窗 — 多阶段 + 闪烁动画 */
+        @keyframes export-pulse {
+            0%, 100% { opacity:1; }
+            50% { opacity:0.3; }
+        }
+        .toast.exporting {
+            display:flex; align-items:center; gap:10px;
+            padding:12px 28px; min-width:260px; justify-content:center;
+            background:#fff; border:1px solid #d6e4ff; color:#1a1a1a;
+            box-shadow:0 4px 20px rgba(0,0,0,0.10);
+        }
+        .toast .export-dot {
+            width:8px; height:8px; border-radius:50%; background:#1677ff;
+            animation:export-pulse 0.8s ease-in-out infinite; flex-shrink:0;
+        }
+        .toast .export-stage {
+            font-size:13px; font-weight:500; transition:opacity .25s;
+        }
+        .toast .export-icon {
+            font-size:16px; flex-shrink:0;
+        }
+
         /* ---- Config Modal ---- */
         .modal-overlay {
             position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;
@@ -4576,6 +4598,41 @@
         }
 
         // ---- Export & Navigation ----
+        var _exportStages = [
+            { icon: '📝', text: '正在准备简历数据...' },
+            { icon: '🎨', text: '正在渲染页面布局...' },
+            { icon: '🖨️', text: '正在生成 PDF 文件...' },
+            { icon: '📦', text: '正在传输文件...' },
+        ];
+        var _exportStageIdx = 0;
+        var _exportStageTimer = null;
+
+        /** 启动导出进度轮播（闪烁圆点 + 阶段文字切换） */
+        function startExportProgress() {
+            _exportStageIdx = 0;
+            var toast = document.getElementById('toast');
+            toast.className = 'toast exporting show';
+
+            function tick() {
+                var stage = _exportStages[_exportStageIdx % _exportStages.length];
+                toast.innerHTML = '<span class="export-dot"></span>'
+                    + '<span class="export-icon">' + stage.icon + '</span>'
+                    + '<span class="export-stage">' + stage.text + '</span>';
+                _exportStageIdx++;
+                _exportStageTimer = setTimeout(tick, 1200);
+            }
+            tick();  // 立即显示第一条
+        }
+
+        /** 停止导出进度轮播，显示最终结果 */
+        function stopExportProgress(success, msg) {
+            clearTimeout(_exportStageTimer);
+            _exportStageTimer = null;
+            var toast = document.getElementById('toast');
+            toast.className = 'toast ' + (success ? 'success' : '') + ' info show';
+            toast.textContent = msg || (success ? 'PDF 已导出' : '导出失败');
+        }
+
         function exportPDF() {
             if (_exporting) return;  // 防重复点击
 
@@ -4583,8 +4640,7 @@
 
             saveToLocal();
             setExportButtonsDisabled(true);
-            // 持久 toast — 直到下载完成才消失
-            showToast('正在生成 PDF，请稍候...', 'info', 0);
+            startExportProgress();
 
             console.time('[PDF导出] 前端构建');
             // 1. 获取简历预览区域的完整 HTML（含所有样式）
@@ -4691,7 +4747,7 @@
             .then(function(blob) {
                 console.timeEnd('[PDF导出] 服务端+下载');
                 console.timeEnd('[PDF导出] 总耗时');
-                dismissToast();
+                stopExportProgress(true, 'PDF 已导出');
                 setExportButtonsDisabled(false);
                 console.log('[PDF导出] 成功, 大小:', blob.size, 'bytes');
                 var url = URL.createObjectURL(blob);
@@ -4702,17 +4758,24 @@
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
-                showToast('PDF 已导出', 'success');
+                // 3 秒后自动消失
+                var toast = document.getElementById('toast');
+                clearTimeout(toast._timer);
+                toast._timer = setTimeout(function() { toast.classList.remove('show'); }, 3000);
             })
             .catch(function(err) {
                 console.timeEnd('[PDF导出] 服务端+下载');
                 console.timeEnd('[PDF导出] 总耗时');
-                dismissToast();
+                stopExportProgress(false, '后端导出失败，使用浏览器打印...');
                 setExportButtonsDisabled(false);
                 console.error('[PDF导出] 失败:', err.message);
                 console.log('[PDF导出] 回退到浏览器打印方案');
-                showToast('后端导出失败，使用浏览器打印...', 'info');
-                fallbackPrintExport(fullHtml, title);
+                // 1.5 秒后开始 fallback
+                var toast = document.getElementById('toast');
+                toast._timer = setTimeout(function() {
+                    toast.classList.remove('show');
+                    fallbackPrintExport(fullHtml, title);
+                }, 1500);
             });
         }
 
