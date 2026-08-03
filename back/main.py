@@ -1008,7 +1008,11 @@ def export_download(task_id: str, request_filename: str = ""):
     if task["stage"] == "error":
         raise HTTPException(status_code=500, detail=task.get("error", "Export failed"))
     if task["stage"] != "done":
-        raise HTTPException(status_code=425, detail="PDF not ready yet")
+        raise HTTPException(
+            status_code=503,
+            detail="PDF not ready yet",
+            headers={"Retry-After": "1"}
+        )
     if not task.get("pdf_bytes"):
         raise HTTPException(status_code=500, detail="PDF data missing")
 

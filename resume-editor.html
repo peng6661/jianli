@@ -4662,6 +4662,45 @@
             if (_exportPollTimer) { clearTimeout(_exportPollTimer); _exportPollTimer = null; }
         }
 
+        /** 使用 fetch 下载 PDF，遇到 503 自动重试（最多 5 次，间隔 500ms） */
+        function _fetchDownload(taskId, title, retryCount) {
+            var apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '';
+            var dlUrl = apiBase + '/api/export-download/' + taskId + '?t=' + Date.now();
+            fetch(dlUrl)
+            .then(function(r) {
+                if (!r.ok) {
+                    if ((r.status === 503 || r.status === 425) && retryCount < 5) {
+                        console.log('[PDF导出] 服务端未就绪(%d)，500ms后重试(%d/5)', r.status, retryCount + 1);
+                        setTimeout(function() { _fetchDownload(taskId, title, retryCount + 1); }, 500);
+                        return null;
+                    }
+                    return r.text().then(function(t) {
+                        var m = '下载失败'; try { var j = JSON.parse(t); m = j.detail || m; } catch(e) {}
+                        throw new Error(m);
+                    });
+                }
+                return r.blob();
+            })
+            .then(function(blob) {
+                if (!blob) return;  // 重试中
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = title + '.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+                console.log('[PDF导出] 下载完成');
+                var toast = document.getElementById('toast');
+                toast._timer = setTimeout(function() { toast.classList.remove('show'); }, 3000);
+            })
+            .catch(function(err) {
+                console.error('[PDF导出] 下载失败:', err);
+                showToast('PDF下载失败，请重试', 'info');
+            });
+        }
+
         function exportPDF() {
             if (_exporting) return;
 
@@ -4778,22 +4817,12 @@
                         _updateExportToast(stage);
 
                         if (stage === 'done') {
-                            // 步骤 3: 下载 PDF
+                            // 步骤 3: 下载 PDF（使用 fetch 避免浏览器自动重试 425/503）
                             _stopPolling();
                             console.timeEnd('[PDF导出] 服务端+下载');
                             console.timeEnd('[PDF导出] 总耗时');
                             setExportButtonsDisabled(false);
-                            // 触发下载
-                            var a = document.createElement('a');
-                            a.href = apiBase + '/api/export-download/' + taskId + '?t=' + Date.now();
-                            a.download = title + '.pdf';
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            console.log('[PDF导出] 下载已触发');
-                            // 3 秒后自动消失
-                            var toast = document.getElementById('toast');
-                            toast._timer = setTimeout(function() { toast.classList.remove('show'); }, 3000);
+                            _fetchDownload(taskId, title, 0);
                         } else if (stage === 'error') {
                             _stopPolling();
                             console.timeEnd('[PDF导出] 服务端+下载');
