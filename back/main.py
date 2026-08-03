@@ -103,23 +103,33 @@ app = FastAPI(
 
 
 @app.on_event("startup")
-def startup_event():
-    """Pre-launch persistent Edge browser (CDP mode) on app startup.
+async def startup_event():
+    """Pre-launch persistent Edge browser (CDP mode) in background.
 
-    Uses FastAPI startup event (not __main__ guard) because the app is
-    imported as a module by uvicorn (uvicorn back.main:app), so
-    __name__ == "back.main", not "__main__".
+    Runs asynchronously so it doesn't block the server startup.
+    If CDP isn't ready when the first PDF request arrives, that request
+    will fall back to subprocess mode.
     """
     global _edge_cdp
-    if EDGE_PATH:
-        try:
-            _edge_cdp = EdgeCDPClient(EDGE_PATH, debug_port=9222)
-            _edge_cdp.start()
-            log.info("Edge CDP browser pre-launched — PDF requests will be fast!")
-        except Exception as e:
-            log.warning("CDP pre-launch failed, will use subprocess fallback: %s", e)
-            _edge_cdp = None
-    else:
+    if not EDGE_PATH:
+        _edge_cdp = None
+        return
+    # Fire and forget — don't block server startup
+    asyncio.create_task(_init_cdp_browser())
+
+
+async def _init_cdp_browser():
+    """Background task: launch Edge with CDP enabled."""
+    global _edge_cdp
+    try:
+        cdp = EdgeCDPClient(EDGE_PATH, debug_port=9222)
+        # Run blocking Popen in a thread to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, cdp.start)
+        _edge_cdp = cdp
+        log.info("Edge CDP browser pre-launched — PDF requests will be fast!")
+    except Exception as e:
+        log.warning("CDP pre-launch failed, will use subprocess fallback: %s", e)
         _edge_cdp = None
 
 
@@ -291,14 +301,11 @@ class EdgeCDPClient:
             "--disable-dev-shm-usage",
             "--disable-extensions",
             "--disable-sync",
-            "--hide-scrollbars",
             "--no-first-run",
             "--no-default-browser-check",
-            "--password-store=basic",
             "--disable-crash-reporter",
             "--disable-background-networking",
             "--disable-component-update",
-            "--disable-features=TranslateUI,BackForwardCache",
             f"--user-data-dir={user_data_dir}",
             f"--remote-debugging-port={self.debug_port}",
             "about:blank",  # Keep a blank page open
