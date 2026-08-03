@@ -311,7 +311,7 @@ class EdgeCDPClient:
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # DEVNULL — avoid pipe buffer deadlock
             stdin=subprocess.DEVNULL,
             env=env,
             start_new_session=True,
@@ -350,8 +350,11 @@ class EdgeCDPClient:
                     f"stderr: {stderr_tail[:1000]}"
                 )
 
+        # Timed out — check if Edge is still alive
+        alive = self.process.poll() is None
         raise RuntimeError(
             f"Edge did not start within 30 seconds. "
+            f"(alive={alive}, pid={self.process.pid}) "
             f"Last error: {last_error}"
         )
 
