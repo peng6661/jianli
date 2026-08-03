@@ -2217,7 +2217,7 @@
             }
 
             container.querySelectorAll('.paginated-page').forEach(function(pg) {
-                pg.addEventListener('mousedown', function(e) {
+                function pgImgStart(e, cx, cy) {
                     var imgItem = e.target.closest('.resume-image-item');
                     if (imgItem) {
                         var imgId = imgItem.dataset.imgId;
@@ -2226,12 +2226,14 @@
                         if (!imgData) return;
                         e.preventDefault();
                         e.stopPropagation();
-                        var startX = e.clientX;
-                        var startY = e.clientY;
+                        var startX = cx;
+                        var startY = cy;
                         var startRect = { x: imgData.x, y: imgData.y };
+                        function getXY(ev) { return ev.touches ? ev.touches[0] : ev; }
                         function onMove(ev) {
-                            imgData.x = startRect.x + (ev.clientX - startX);
-                            imgData.y = startRect.y + (ev.clientY - startY);
+                            var p = getXY(ev);
+                            imgData.x = startRect.x + (p.clientX - startX);
+                            imgData.y = startRect.y + (p.clientY - startY);
                             document.querySelectorAll('.resume-image-item[data-img-id="' + imgData.id + '"]').forEach(function(el) {
                                 el.style.left = imgData.x + 'px';
                                 el.style.top = imgData.y + 'px';
@@ -2242,13 +2244,25 @@
                             autoSave();
                             document.removeEventListener('mousemove', onMove);
                             document.removeEventListener('mouseup', onUp);
+                            document.removeEventListener('touchmove', onMove);
+                            document.removeEventListener('touchend', onUp);
                         }
                         document.addEventListener('mousemove', onMove);
                         document.addEventListener('mouseup', onUp);
+                        document.addEventListener('touchmove', onMove, { passive: false });
+                        document.addEventListener('touchend', onUp);
                     } else if (!e.target.closest('.resume-img-edit-overlay')) {
                         selectImage(null);
                     }
-                });
+                }
+                pg.addEventListener('mousedown', function(e) { pgImgStart(e, e.clientX, e.clientY); });
+                pg.addEventListener('touchstart', function(e) {
+                    if (e.touches.length === 1) {
+                        var t = e.target.closest('.resume-image-item');
+                        if (t) e.preventDefault();  // 只在拖拽图片时阻止滚动
+                        pgImgStart(e, e.touches[0].clientX, e.touches[0].clientY);
+                    }
+                }, { passive: false });
             });
 
             // 恢复滚动位置，防止编辑内容时预览跳回顶部
@@ -5255,7 +5269,8 @@
                     else el.style.transform = '';
                 });
             }
-            _editOverlay.addEventListener('mousedown', function(e) {
+            function getXY(ev) { return ev.touches ? ev.touches[0] : ev; }
+            function handleOverlayStart(e, cx, cy) {
                 var handle = e.target.closest('.img-handle');
                 var rotateBtn = e.target.closest('.img-rotate');
                 var deleteBtn = e.target.closest('.img-delete');
@@ -5264,30 +5279,34 @@
                     var imgData = resumeImages.find(function(i) { return i.id === selectedImageId; });
                     if (!imgData) return;
                     e.preventDefault();
-                    var sx = e.clientX, sy = e.clientY;
+                    var sx = cx, sy = cy;
                     var sRect = { x: imgData.x, y: imgData.y };
                     function onMove(ev) {
-                        imgData.x = sRect.x + (ev.clientX - sx);
-                        imgData.y = sRect.y + (ev.clientY - sy);
+                        var p = getXY(ev);
+                        imgData.x = sRect.x + (p.clientX - sx);
+                        imgData.y = sRect.y + (p.clientY - sy);
                         positionEditOverlay();
                         updateAllImageEls(imgData);
                     }
-                    function onUp() { autoSave(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+                    function onUp() { autoSave(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp); }
                     document.addEventListener('mousemove', onMove);
                     document.addEventListener('mouseup', onUp);
+                    document.addEventListener('touchmove', onMove, { passive: false });
+                    document.addEventListener('touchend', onUp);
                     return;
                 }
                 var imgData = resumeImages.find(function(i) { return i.id === selectedImageId; });
                 if (!imgData) return;
                 e.preventDefault();
-                startX = e.clientX; startY = e.clientY;
+                startX = cx; startY = cy;
                 startRect = { x: imgData.x, y: imgData.y, w: imgData.width, h: imgData.height };
                 activeImg = imgData;
                 if (rotateBtn) action = 'rotate';
                 else { action = 'resize'; activeImg._dir = handle.dataset.dir; }
                 function onMove(ev) {
                     if (!activeImg) return;
-                    var dx = ev.clientX - startX, dy = ev.clientY - startY;
+                    var p = getXY(ev);
+                    var dx = p.clientX - startX, dy = p.clientY - startY;
                     if (action === 'resize') {
                         var dir = activeImg._dir;
                         var newW = startRect.w, newH = startRect.h;
@@ -5314,22 +5333,29 @@
                         activeImg.width = Math.round(newW); activeImg.height = Math.round(newH);
                     } else if (action === 'rotate') {
                         var or2 = _editOverlay.getBoundingClientRect();
-                        var cx = or2.left + or2.width / 2, cy = or2.top + or2.height / 2;
-                        activeImg.rotation = Math.round(Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI + 90);
+                        var cx2 = or2.left + or2.width / 2, cy2 = or2.top + or2.height / 2;
+                        activeImg.rotation = Math.round(Math.atan2(p.clientY - cy2, p.clientX - cx2) * 180 / Math.PI + 90);
                     }
                     positionEditOverlay();
                     updateAllImageEls(activeImg);
                 }
-                function onUp() { activeImg = null; action = ''; autoSave(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+                function onUp() { activeImg = null; action = ''; autoSave(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp); }
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
-            });
+                document.addEventListener('touchmove', onMove, { passive: false });
+                document.addEventListener('touchend', onUp);
+            }
+            _editOverlay.addEventListener('mousedown', function(e) { handleOverlayStart(e, e.clientX, e.clientY); });
+            _editOverlay.addEventListener('touchstart', function(e) {
+                if (e.touches.length === 1) { e.preventDefault(); handleOverlayStart(e, e.touches[0].clientX, e.touches[0].clientY); }
+            }, { passive: false });
         }
         function initImageInteraction(layer) {
             var activeImg = null;
             var action = '';
             var startX, startY, startRect, startRotation;
-            layer.addEventListener('mousedown', function(e) {
+            function getXY(ev) { return ev.touches ? ev.touches[0] : ev; }
+            function handleLayerStart(e, cx, cy) {
                 var handle = e.target.closest('.img-handle');
                 var rotateBtn = e.target.closest('.img-rotate');
                 var imgEl = e.target.closest('.resume-image-item');
@@ -5340,8 +5366,8 @@
                 if (!imgData) return;
                 e.preventDefault();
                 e.stopPropagation();
-                startX = e.clientX;
-                startY = e.clientY;
+                startX = cx;
+                startY = cy;
                 startRect = { x: imgData.x, y: imgData.y, w: imgData.width, h: imgData.height };
                 startRotation = imgData.rotation || 0;
                 if (rotateBtn) {
@@ -5357,8 +5383,9 @@
                 }
                 function onMove(ev) {
                     if (!activeImg) return;
-                    var dx = ev.clientX - startX;
-                    var dy = ev.clientY - startY;
+                    var p = getXY(ev);
+                    var dx = p.clientX - startX;
+                    var dy = p.clientY - startY;
                     if (action === 'move') {
                         activeImg.x = startRect.x + dx;
                         activeImg.y = startRect.y + dy;
@@ -5394,9 +5421,9 @@
                         var imgEl2 = document.querySelector('[data-img-id="' + activeImg.id + '"]');
                         if (imgEl2) {
                             var rect = imgEl2.getBoundingClientRect();
-                            var cx = rect.left + rect.width / 2;
-                            var cy = rect.top + rect.height / 2;
-                            var angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI;
+                            var centerX = rect.left + rect.width / 2;
+                            var centerY = rect.top + rect.height / 2;
+                            var angle = Math.atan2(p.clientY - centerY, p.clientX - centerX) * 180 / Math.PI;
                             activeImg.rotation = Math.round(angle + 90);
                         }
                     }
@@ -5416,10 +5443,18 @@
                     autoSave();
                     document.removeEventListener('mousemove', onMove);
                     document.removeEventListener('mouseup', onUp);
+                    document.removeEventListener('touchmove', onMove);
+                    document.removeEventListener('touchend', onUp);
                 }
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
-            });
+                document.addEventListener('touchmove', onMove, { passive: false });
+                document.addEventListener('touchend', onUp);
+            }
+            layer.addEventListener('mousedown', function(e) { handleLayerStart(e, e.clientX, e.clientY); });
+            layer.addEventListener('touchstart', function(e) {
+                if (e.touches.length === 1) { e.preventDefault(); handleLayerStart(e, e.touches[0].clientX, e.touches[0].clientY); }
+            }, { passive: false });
         }
         function previewInBrowser() {
             saveToLocal();
