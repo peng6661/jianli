@@ -394,10 +394,9 @@ class EdgeCDPClient:
     async def generate_pdf(self, html: str, filename: str) -> bytes:
         """Generate PDF using CDP Page.printToPDF.
 
-        Uses a temp HTML file + file:// URI (no base64 overhead, no size limit).
-        Polls document.readyState instead of waiting for CDP events (avoids the
-        race condition where _cdp_call consumes loadEventFired before the event
-        listener starts).
+        Uses Page.setDocumentContent to inject HTML directly into the renderer
+        (no temp file, no file:// URI, no navigation). This is the fastest path
+        because Edge processes the content synchronously in-process.
         """
         t_start = time.monotonic()
         self.ensure_alive()
@@ -405,17 +404,7 @@ class EdgeCDPClient:
 
         log.info("[CDP] Generating PDF: %s (html=%d bytes)", filename, len(html))
 
-        temp_html = None
         try:
-            # Write HTML to temp file FIRST, then create target directly at
-            # the file:// URI — saves one about:blank → navigate round trip.
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".html", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(html)
-                temp_html = f.name
-            file_url = Path(temp_html).absolute().as_uri()
-
             async with websockets.connect(
                 ws_url,
                 max_size=10 * 1024 * 1024,
@@ -424,13 +413,12 @@ class EdgeCDPClient:
             ) as ws:
                 t_conn = time.monotonic()
 
-                # 1. Create a new target directly at the HTML file
+                # 1. Create a new target (blank tab)
                 target_id = await self._cdp_call(ws, "Target.createTarget", {
-                    "url": file_url,
+                    "url": "about:blank",
                     "newWindow": False,
                 })
                 target_id = target_id["targetId"]
-                t_target = time.monotonic()
 
                 # 2. Attach to the target
                 session = await self._cdp_call(ws, "Target.attachToTarget", {
@@ -438,28 +426,39 @@ class EdgeCDPClient:
                     "flatten": True,
                 })
                 session_id = session["sessionId"]
+                t_target = time.monotonic()
 
                 try:
-                    # 3. Enable Page domain (Runtime not needed for readyState polling)
+                    # 3. Enable domains
                     await self._cdp_call(ws, "Page.enable", {}, session_id)
+                    await self._cdp_call(ws, "Runtime.enable", {}, session_id)
 
-                    # 4. Poll document.readyState until "complete"
-                    #    Short poll interval (50ms) — file:// URIs render fast
-                    #    since there are no network requests.
-                    for poll_i in range(160):  # 160 × 50ms = 8s max
-                        await asyncio.sleep(0.05)
+                    # 4. Set document content directly (no file I/O, no navigation)
+                    #    This is synchronous in Edge's renderer — much faster than
+                    #    writing a temp file and navigating to a file:// URL.
+                    await self._cdp_call(ws, "Page.setDocumentContent", {
+                        "html": html,
+                    }, session_id, timeout=10)
+
+                    # 5. Poll document.readyState — check immediately, then
+                    #    at 20ms intervals. With setDocumentContent the page
+                    #    is rendered in-process and reaches "complete" quickly.
+                    t_set = time.monotonic()
+                    for poll_i in range(400):  # 400 × 20ms = 8s max
+                        if poll_i > 0:
+                            await asyncio.sleep(0.02)
                         try:
                             ready = await self._cdp_call(ws, "Runtime.evaluate", {
                                 "expression": "document.readyState",
                                 "returnByValue": True,
-                            }, session_id, timeout=3)
+                            }, session_id, timeout=2)
                             if ready.get("result", {}).get("value") == "complete":
                                 break
                         except Exception:
                             pass  # retry on evaluate failure
                     t_load = time.monotonic()
 
-                    # 5. Generate PDF
+                    # 6. Generate PDF
                     pdf_result = await self._cdp_call(
                         ws, "Page.printToPDF", {
                             "printBackground": True,
@@ -501,13 +500,6 @@ class EdgeCDPClient:
                 total_elapsed, exc_info=True,
             )
             return _convert_with_edge_subprocess(html, filename)
-        finally:
-            # Clean up temp HTML file
-            if temp_html and Path(temp_html).exists():
-                try:
-                    Path(temp_html).unlink()
-                except Exception:
-                    pass
 
     # ---- CDP helpers ----
 
