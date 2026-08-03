@@ -984,27 +984,21 @@
             /* === Grid === */
             .grid-2 { grid-template-columns: 1fr; }
 
-            /* === 移动端预览：保持纸张原始尺寸，支持双向滚动 + 缩放 === */
+            /* === 移动端预览：原生滚动 + 系统缩放 === */
             .preview-panel .card {
-                overflow: auto !important;       /* 卡片级滚动，支持双向 */
-                -webkit-overflow-scrolling: touch;
+                overflow: scroll !important;      /* 强制显示滚动，双向 */
+                -webkit-overflow-scrolling: touch; /* iOS 惯性滚动 */
             }
             .resume-paper {
-                /* 保持 width:210mm，不压缩 */
                 min-height: auto !important;
                 padding: 20px 20px !important;
-                /* 设置足够大的容器尺寸，确保滚动条生效 */
             }
             .paginated-page {
                 padding: 20px 20px !important;
-                /* 保持 width:210mm */
             }
             .resume-preview-container {
-                /* 取消子容器滚动，统一由卡片层面处理 */
                 overflow: visible !important;
                 padding: 12px !important;
-                /* 允许双指缩放 */
-                touch-action: pan-x pan-y pinch-zoom;
             }
 
             /* === 弹窗/Drawer 全屏 === */
