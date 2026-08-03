@@ -959,11 +959,26 @@
             .editor-header .nav-logo span { display: none; }
             .editor-header .nav-logo img { width: 24px; height: 24px; }
             .editor-title-input { max-width: 120px; font-size: 14px; }
-            /* 隐藏次要按钮 */
-            .editor-header-right .ant-btn-default { display: none; }
-            .editor-header-right .ant-btn-primary { font-size: 12px; padding: 4px 10px; }
-            /* 显示返回按钮图标 */
-            .back-btn { padding: 4px 6px; }
+            /* 顶栏右侧按钮：图标化，保留全部功能 */
+            .editor-header-right { gap: 0; }
+            .editor-header-right .ant-btn-default {
+                display: inline-flex !important;
+                font-size: 0;                    /* 隐藏文字标签 */
+                padding: 8px;                    /* 触控目标 ≥40px */
+                background: transparent;
+                border-color: transparent;
+                color: var(--ant-text-secondary);
+            }
+            .editor-header-right .ant-btn-default:active {
+                background: rgba(0,0,0,0.06);
+            }
+            .editor-header-right .ant-btn-default svg {
+                width: 20px; height: 20px;       /* 图标放大到可辨识尺寸 */
+            }
+            .editor-header-right .ant-btn-primary { font-size: 12px; padding: 5px 10px; }
+            /* 返回按钮缩窄 + 隐藏 "返回" 文字 */
+            .back-btn { padding: 4px 6px; font-size: 0; }
+            .back-btn svg { width: 20px; height: 20px; }
             .header-divider { display: none; }
 
             /* === 编辑器卡片头部精简 === */
