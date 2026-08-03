@@ -976,18 +976,22 @@
             /* === Grid === */
             .grid-2 { grid-template-columns: 1fr; }
 
-            /* === 预览纸张缩放适配 === */
+            /* === 移动端预览：保持纸张原始宽度，允许双向滚动 === */
             .resume-paper {
-                width: 100% !important;
+                /* 保持 210mm 设计宽度，不压缩 */
                 min-height: auto !important;
-                padding: 20px 16px !important;
+                padding: 20px 20px !important;
             }
             .paginated-page {
-                width: 100% !important;
-                padding: 20px 16px !important;
+                /* 保持 210mm 设计宽度 */
+                padding: 20px 20px !important;
             }
-            /* 预览容器允许滚动 */
-            .preview-panel .card-body { overflow: auto; -webkit-overflow-scrolling: touch; }
+            /* 预览容器：启用平滑滚动 + 手势支持 */
+            .resume-preview-container {
+                overflow: auto !important;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-x pan-y;
+            }
 
             /* === 弹窗/Drawer 全屏 === */
             .drawer { width: 100% !important; min-width: 100% !important; }
