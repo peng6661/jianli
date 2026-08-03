@@ -977,16 +977,18 @@
             .grid-2 { grid-template-columns: 1fr; }
 
             /* === 移动端预览：保持纸张原始宽度，允许双向滚动 === */
+            .preview-panel .card {
+                overflow: visible !important;  /* 解除 overflow:hidden，让内部滚动生效 */
+            }
             .resume-paper {
-                /* 保持 210mm 设计宽度，不压缩 */
                 min-height: auto !important;
                 padding: 20px 20px !important;
+                /* 保持桌面端 width:210mm，不压缩 */
             }
             .paginated-page {
-                /* 保持 210mm 设计宽度 */
                 padding: 20px 20px !important;
+                /* 保持桌面端 width:210mm */
             }
-            /* 预览容器：启用平滑滚动 + 手势支持 */
             .resume-preview-container {
                 overflow: auto !important;
                 -webkit-overflow-scrolling: touch;
