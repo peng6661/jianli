@@ -538,7 +538,15 @@ class EdgeCDPClient:
                 "[CDP] Failed after %.1fs, falling back to subprocess",
                 total_elapsed, exc_info=True,
             )
-            return _convert_with_edge_subprocess(html, filename)
+            # Mark CDP as unhealthy so the next request restarts Edge
+            self._ready = False
+            # Notify frontend we're switching to subprocess mode
+            _set_task_stage(task_id, "generating")
+            # Run in executor to avoid blocking the async event loop
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, _convert_with_edge_subprocess, html, filename
+            )
         finally:
             if temp_html and Path(temp_html).exists():
                 try:
