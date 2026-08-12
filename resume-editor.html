@@ -946,7 +946,12 @@
             .editor-page { padding-bottom: 70px; }
 
             /* === 面板切换 === */
-            .editor-panel, .preview-panel { width: 100% !important; padding: 0 !important; }
+            .editor-panel, .preview-panel {
+                flex: 1 1 100% !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                padding: 0 !important;
+            }
             .preview-panel { display: none; }
             .editor-main.show-preview .editor-panel { display: none; }
             .editor-main.show-preview .preview-panel { display: flex; }
