@@ -4667,16 +4667,35 @@
             if (_exportPollTimer) { clearTimeout(_exportPollTimer); _exportPollTimer = null; }
         }
 
-        /** 使用 fetch 下载 PDF，遇到 503 自动重试（最多 5 次，间隔 500ms） */
+        /** 使用 fetch 下载 PDF，遇到 503/425/网络错误自动重试
+         *  最大重试 20 次 + 退避间隔(400ms→1500ms)，总计约 15-20 秒容忍度，
+         *  防止 CDP (20s+) / 慢速网络 / Nginx 请求乱序 导致用户看到"成功又失败"的闪烁。
+         */
         function _fetchDownload(taskId, title, retryCount) {
+            retryCount = retryCount || 0;
             var apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '';
             var dlUrl = apiBase + '/api/export-download/' + taskId + '?t=' + Date.now();
+
+            // 只要还在重试就保持"正在下载…"的中态 Toast，不要闪成功/失败
+            if (retryCount > 0) {
+                var toast = document.getElementById('toast');
+                clearTimeout(toast._timer);
+                toast.className = 'toast exporting show';
+                toast.innerHTML = '<span class="export-dot"></span>'
+                    + '<span class="export-stage">正在下载文件 (' + (retryCount + 1) + '/20)...</span>';
+            }
+
             fetch(dlUrl)
             .then(function(r) {
                 if (!r.ok) {
-                    if ((r.status === 503 || r.status === 425) && retryCount < 5) {
-                        console.log('[PDF导出] 服务端未就绪(%d)，500ms后重试(%d/5)', r.status, retryCount + 1);
-                        setTimeout(function() { _fetchDownload(taskId, title, retryCount + 1); }, 500);
+                    // 可重试: 503(未就绪) / 425(Too Early) / 404(任务还没注册到后端worker) / 502/504(Nginx重启)
+                    var retryable = (r.status === 503 || r.status === 425 || r.status === 404
+                                  || r.status === 502 || r.status === 504);
+                    if (retryable && retryCount < 20) {
+                        // 指数退避: 400ms, 500ms, 600ms, ... 最大 1500ms
+                        var delayMs = Math.min(1500, 400 + retryCount * 100);
+                        console.log('[PDF导出] 服务端未就绪(%d)，%dms后重试(%d/20)', r.status, delayMs, retryCount + 1);
+                        setTimeout(function() { _fetchDownload(taskId, title, retryCount + 1); }, delayMs);
                         return null;
                     }
                     return r.text().then(function(t) {
@@ -4687,7 +4706,7 @@
                 return r.blob();
             })
             .then(function(blob) {
-                if (!blob) return;  // 重试中
+                if (!blob) return;  // 重试中，不做任何事
                 var url = URL.createObjectURL(blob);
                 var a = document.createElement('a');
                 a.href = url;
@@ -4697,12 +4716,23 @@
                 document.body.removeChild(a);
                 setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
                 console.log('[PDF导出] 下载完成');
+                // ⭐ 真正下载成功后才切换到成功 Toast，避免闪烁
+                _updateExportToast('done');
+                setExportButtonsDisabled(false);
                 var toast = document.getElementById('toast');
                 toast._timer = setTimeout(function() { toast.classList.remove('show'); }, 3000);
             })
             .catch(function(err) {
-                console.error('[PDF导出] 下载失败:', err);
-                showToast('PDF下载失败，请重试', 'info');
+                // 非 fetch reject 也可能是网络中断，再给一次退避重试（非状态码错误）
+                if (retryCount < 20) {
+                    var delayMs = Math.min(1500, 600 + retryCount * 100);
+                    console.warn('[PDF导出] 下载网络异常，%dms后重试(%d/20):', delayMs, retryCount + 1, err && err.message);
+                    setTimeout(function() { _fetchDownload(taskId, title, retryCount + 1); }, delayMs);
+                    return;
+                }
+                console.error('[PDF导出] 下载失败(重试耗尽):', err);
+                setExportButtonsDisabled(false);
+                showToast('PDF下载失败，请重试（或稍后刷新页面后从「历史导出记录」重试）', 'info');
             });
         }
 
@@ -4823,14 +4853,25 @@
                     .then(function(r) { return r.json(); })
                     .then(function(status) {
                         var stage = status.stage;
-                        _updateExportToast(stage);
+                        // ⭐ stage=done 时不立即切换成功 Toast，避免"成功又失败"闪烁
+                        // 只更新非 done 阶段的 UI
+                        if (stage !== 'done') {
+                            _updateExportToast(stage);
+                        }
 
                         if (stage === 'done') {
                             // 步骤 3: 下载 PDF（使用 fetch 避免浏览器自动重试 425/503）
                             _stopPolling();
                             console.timeEnd('[PDF导出] 服务端+下载');
                             console.timeEnd('[PDF导出] 总耗时');
-                            setExportButtonsDisabled(false);
+                            // 下载中的 Toast 中间态（带圆点），不要显示绿色成功
+                            var toast = document.getElementById('toast');
+                            clearTimeout(toast._timer);
+                            toast.className = 'toast exporting show';
+                            toast.innerHTML = '<span class="export-dot"></span>'
+                                + '<span class="export-stage">正在准备下载…</span>';
+                            // ⭐ 不调用 setExportButtonsDisabled(false)，等 _fetchDownload 内部成功后再启用
+                            //     防止用户在 CDP 实际完成前重复点击
                             _fetchDownload(taskId, title, 0);
                         } else if (stage === 'error') {
                             _stopPolling();

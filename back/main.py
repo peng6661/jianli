@@ -973,8 +973,12 @@ async def _run_export_task(task_id: str, html: str, filename: str):
         sem = _get_semaphore()
         async with sem:
             pdf_bytes = await convert_html_to_pdf(html, filename, task_id=task_id)
-        _export_tasks[task_id]["pdf_bytes"] = pdf_bytes
-        _export_tasks[task_id]["stage"] = "done"
+        # 原子性: 用 dict.update 一次性写入 pdf_bytes + stage=done
+        # 防止 "stage=done 但 pdf_bytes 还没写入" 的竞态窗口
+        _export_tasks[task_id].update({
+            "pdf_bytes": pdf_bytes,
+            "stage": "done",
+        })
     except Exception as e:
         log.error("[Task %s] Export failed: %s", task_id, str(e), exc_info=True)
         _export_tasks[task_id]["stage"] = "error"
@@ -1001,19 +1005,42 @@ def export_download(task_id: str, request_filename: str = ""):
     """Download the generated PDF for a completed task.
 
     Returns the PDF blob. Call only after /api/export-status shows "done".
+    Includes a short server-side spin-wait for edge cases where status=done
+    arrives via Nginx slightly before pdf_bytes is visible to this worker
+    (reverse-proxy request reordering).
     """
     task = _export_tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if task["stage"] == "error":
         raise HTTPException(status_code=500, detail=task.get("error", "Export failed"))
-    if task["stage"] != "done":
+
+    # Server-side grace window: if stage isn't "done" yet OR pdf_bytes is
+    # still not populated (Nginx reordered the two requests from the client),
+    # spin for up to 2 seconds (10 × 200ms) before returning 503.
+    # This eliminates the classic "status=done → download=503" race that
+    # occurs because /api/export-status and /api/export-download are two
+    # separate TCP connections that can arrive at the backend out of order.
+    spins = 0
+    while spins < 10:
+        stage = task.get("stage", "")
+        has_pdf = bool(task.get("pdf_bytes")) and len(task["pdf_bytes"]) > 0
+        if stage == "done" and has_pdf:
+            break
+        if stage == "error":
+            raise HTTPException(status_code=500, detail=task.get("error", "Export failed"))
+        time.sleep(0.2)
+        spins += 1
+
+    stage = task.get("stage", "")
+    has_pdf = bool(task.get("pdf_bytes")) and len(task["pdf_bytes"]) > 0
+    if stage != "done":
         raise HTTPException(
             status_code=503,
             detail="PDF not ready yet",
             headers={"Retry-After": "1"}
         )
-    if not task.get("pdf_bytes"):
+    if not has_pdf:
         raise HTTPException(status_code=500, detail="PDF data missing")
 
     pdf_bytes = task["pdf_bytes"]
