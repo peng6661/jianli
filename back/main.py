@@ -759,6 +759,18 @@ async def convert_html_to_pdf(html: str, filename: str,
 
     Uses the CDP-based persistent browser for fast PDF generation
     (no cold start). Falls back to subprocess mode if CDP is unavailable.
+
+    ⚠️  CRITICAL RULE (stage ownership):
+        This function and all helpers BELOW it may ONLY set intermediate
+        stages ("rendering", "generating").
+        The FINAL stages ("done", "error") MUST be set EXCLUSIVELY by
+        the outer caller _run_export_task(), together with writing
+        "pdf_bytes" into _export_tasks[task_id].
+
+        If this function or any of its helpers sets stage="done", there
+        will be a ~microsecond race window where stage == "done" but
+        pdf_bytes hasn't been stored yet, causing export-download to
+        return 503 even though export-status reported "done".
     """
     global _edge_cdp
     if _edge_cdp is not None:
@@ -766,13 +778,13 @@ async def convert_html_to_pdf(html: str, filename: str,
             return await _edge_cdp.generate_pdf(html, filename, task_id=task_id)
         except Exception:
             log.error("[CDP] Failed, falling back to subprocess", exc_info=True)
-    # Fallback: one-shot subprocess (also updates status internally)
+    # Fallback: one-shot subprocess (updates intermediate stage internally)
     _set_task_stage(task_id, "rendering")
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None, _convert_with_edge_subprocess, html, filename
     )
-    _set_task_stage(task_id, "done")
+    # ⚠️  NO stage="done" here! See function docstring above for why.
     return result
 
 
