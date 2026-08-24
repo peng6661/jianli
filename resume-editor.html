@@ -4880,15 +4880,16 @@
         function buildExportCSS(pageSizeRule, viewMode) {
             var heitiFontStack = "'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', sans-serif";
 
-            // 1. 动态配置 CSS（用户配置的字号/颜色/间距，来自 #cfg-dynamic-style）
+            // 1. 静态简历样式（预编译常量，作为默认值，提供 :root 变量 / .rp-* / .resume-paper 等）
+            //    放在最前面，确保用户动态配置能覆盖默认值（如 --rp-theme-color、--list-gap）
+            var resumeCSS = RESUME_STATIC_CSS;
+
+            // 2. 动态配置 CSS（用户配置的字号/颜色/间距，来自 #cfg-dynamic-style）
+            //    放在静态 CSS 之后，覆盖 :root 变量和元素样式，与预览中层叠顺序一致
             var dynStyle = document.getElementById('cfg-dynamic-style');
             var dynamicCSS = dynStyle ? dynStyle.innerHTML : '';
 
-            // 2. 静态简历样式（预编译常量，无需运行时 CSSOM 遍历）
-            //    包含 :root 变量 / .rp-* / .resume-paper / .paginated-page / 基础元素
-            var resumeCSS = RESUME_STATIC_CSS;
-
-            // 3. 导出覆盖 CSS（@page / 黑体 / 分页裁剪）
+            // 3. 导出覆盖 CSS（@page / 黑体 / 分页裁剪），最高优先级
             var overrideCSS = [
                 pageSizeRule,
                 'html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
@@ -4900,7 +4901,9 @@
                 viewMode === 'paginated' ? '.rp-section { page-break-inside: avoid; break-inside: avoid; }' : '',
             ].filter(Boolean).join('\n');
 
-            return dynamicCSS + '\n' + resumeCSS + '\n' + overrideCSS;
+            // 层叠顺序: 静态默认 -> 用户动态配置 -> 导出覆盖
+            // 确保 :root 变量（--rp-theme-color、--list-gap）由动态 CSS 覆盖静态默认值
+            return resumeCSS + '\n' + dynamicCSS + '\n' + overrideCSS;
         }
 
         // 简历内容静态 CSS（从页面 CSS 中提取的常量，避免运行时 CSSOM 遍历 ~1-2s）
